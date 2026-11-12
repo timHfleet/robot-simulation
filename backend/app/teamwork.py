@@ -23,7 +23,7 @@ from .bimanual import _arc, _assemble, _sync
 from .dual import ARM_B_Z, LINE_Z, PARK_A, PARK_B, TUCK_U, Schedule, _to_local
 from .kinematics import HOME_Q4, fk_world
 from .planner import TOOL_DOWN, TrajectoryBuilder, Unreachable, pose_at, roll_to_close_along
-from .tasks import CARRY_Y, CLOTH_EPS, CUP_H, CUP_R, CUP_RACK_H, PLATE_RACK_H, FORCE_CLOTH, GRIP_CLOTH, TOWEL_HALF, \
+from .tasks import CARRY_Y, CLOTH_EPS, CUP_H, CUP_R, CUP_RACK_H, PLATE_RACK_H, FORCE_CLOTH, GRIP_CLOTH, PINCH_PHI, TOWEL_HALF, \
     WEIGHT_TOWEL, WEIGHT_TOWEL_EDGE, _polar, dishes_scene, plan_dishes
 
 
@@ -152,9 +152,9 @@ def plan_towel2(lengths, objects: list[dict], fixtures: list[dict]) -> dict:
     def say(text: str, kind: str = "info", at: TrajectoryBuilder | None = None):
         events.append({"t": round((at or A).t, 3), "text": text, "kind": kind})
 
-    def go_above(arm: str, p_world, height: float = 0.09, close_along: float | None = None):
+    def go_above(arm: str, p_world, height: float = 0.09, close_along: float | None = None, phi: float = PINCH_PHI):
         b = arms[arm]
-        q = pose_at(local(arm, [p_world[0], p_world[1] + height, p_world[2]]), TOOL_DOWN, lengths, prefer=b.q)
+        q = pose_at(local(arm, [p_world[0], p_world[1] + height, p_world[2]]), phi, lengths, prefer=b.q)
         if q is None:
             raise Unreachable(f"above ({p_world[0]:.2f}, {p_world[2]:.2f}) for arm {arm}")
         roll = None if close_along is None else roll_to_close_along(close_along, float(q[0]))
@@ -205,7 +205,7 @@ def plan_towel2(lengths, objects: list[dict], fixtures: list[dict]) -> dict:
         dur = max(1.6, float(np.linalg.norm(np.diff(arcs["A"], axis=0), axis=1).sum()) / 0.25 * 1.875)
         say("Lockstep: both arcs share the same timing so the edge stays straight", "sense")
         for k in arms:
-            arms[k].path3d([local(k, p) for p in arcs[k]], dur=dur)
+            arms[k].path3d([local(k, p) for p in arcs[k]], phi=PINCH_PHI, dur=dur)
         _sync(A, B)
         for k in arms:
             arms[k].let_go()
@@ -214,7 +214,7 @@ def plan_towel2(lengths, objects: list[dict], fixtures: list[dict]) -> dict:
                       "tGrasp": round(t_grasp, 4), "tRelease": round(A.t, 4)})
         for k in arms:
             p = tip(k)
-            arms[k].path3d([p, p + [0, 0.07, 0]], min_dur=0.3)
+            arms[k].path3d([p, p + [0, 0.07, 0]], phi=PINCH_PHI, min_dur=0.3)
         _sync(A, B)
 
         # 3. Arm A folds it across; arm B pulls back out of the way ---------
@@ -228,12 +228,12 @@ def plan_towel2(lengths, objects: list[dict], fixtures: list[dict]) -> dict:
         A.held_weight = WEIGHT_TOWEL_EDGE
         t_grasp = A.t
         arc = _arc(F2, np.array([0.0, 1.0]), half, 2 * CLOTH_EPS)
-        A.path3d([local("A", p) for p in arc], speed=0.28)
+        A.path3d([local("A", p) for p in arc], phi=PINCH_PHI, speed=0.28)
         A.let_go()
         folds.append({"F": [round(float(F2[0]), 5), round(cz, 5)], "n": [0.0, 1.0], "w": round(half, 5), "arms": ["A"],
                       "tGrasp": round(t_grasp, 4), "tRelease": round(A.t, 4)})
         p = tip("A")
-        A.path3d([p, p + [0, 0.07, 0]], min_dur=0.3)
+        A.path3d([p, p + [0, 0.07, 0]], phi=PINCH_PHI, min_dur=0.3)
         _sync(A, B)
 
         # 4. Hand-off: A parks, B takes the folded towel to the basket ------
@@ -251,10 +251,10 @@ def plan_towel2(lengths, objects: list[dict], fixtures: list[dict]) -> dict:
         B.held_weight = WEIGHT_TOWEL
         t_pick = B.t
         p = local("B", [sq[0], stack, sq[2]])
-        B.path3d([p, p + [0, CARRY_Y - stack, 0]], min_dur=0.4)
+        B.path3d([p, p + [0, CARRY_Y - stack, 0]], phi=PINCH_PHI, min_dur=0.4)
         say("Arm B drops it in the laundry basket", "place", at=B)
         floor = 0.012
-        q = pose_at(local("B", [basket["x"], CARRY_Y, basket["z"]]), TOOL_DOWN, lengths, prefer=B.q)
+        q = pose_at(local("B", [basket["x"], CARRY_Y, basket["z"]]), PINCH_PHI, lengths, prefer=B.q)
         if q is None:
             raise Unreachable("above the basket for arm B")
         B.transfer(q, tuck_u=TUCK_U)
@@ -262,7 +262,7 @@ def plan_towel2(lengths, objects: list[dict], fixtures: list[dict]) -> dict:
         B.let_go()
         t_drop = B.t
         p = tip("B")
-        B.path3d([p, p + [0, CARRY_Y - p[1], 0]], min_dur=0.4)
+        B.path3d([p, p + [0, CARRY_Y - p[1], 0]], phi=PINCH_PHI, min_dur=0.4)
         B.verify("towel", "the basket")
         B.transfer(PARK_B, tuck_u=TUCK_U, roll_to=0.0)
         _sync(A, B)

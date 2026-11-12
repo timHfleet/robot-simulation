@@ -54,6 +54,10 @@ FORCE_CLOTH = 6.0
 PLATE_HOLDER_H = 0.015
 PLATE_RACK_H = 0.012
 CUP_RACK_H = 0.07
+# Cloth is pinched with the gripper tilted, not stabbing straight down: the
+# lower finger slides under the edge at a shallow angle, like a hand does.
+PINCH_TILT = math.radians(25)
+PINCH_PHI = TOOL_DOWN + PINCH_TILT  # tool leans out, away from the base
 RIM_GRIP = 0.012  # fingers overlap the plate rim by this much
 
 TASKS = ("dishes", "laundry")
@@ -290,7 +294,7 @@ def _fold(b: TrajectoryBuilder, F: np.ndarray, n: np.ndarray, half: float, base_
     edge = F + n * half
     grip_y = base_y + 0.004
     b.event(f"Grab the {label} edge of the towel", "pick")
-    q_above = _require(pose_at([edge[0], base_y + 0.08, edge[1]], TOOL_DOWN, L, prefer=b.q), "above the edge")
+    q_above = _require(pose_at([edge[0], base_y + 0.08, edge[1]], PINCH_PHI, L, prefer=b.q), "above the edge")
     # Turn the wrist so the fingers close straight across the edge (along n):
     # one finger slides under the hem, the other pinches from above.
     roll = roll_to_close_along(math.atan2(n[1], n[0]), float(q_above[0]))
@@ -308,11 +312,11 @@ def _fold(b: TrajectoryBuilder, F: np.ndarray, n: np.ndarray, half: float, base_
         a = half * math.cos(math.pi * s)
         p = F + n * a
         arc.append([p[0], grip_y + lift * math.sin(math.pi * s) + 0.004 * s, p[1]])
-    b.path3d(arc, speed=0.28)
+    b.path3d(arc, phi=PINCH_PHI, speed=0.28)
     b.let_go()
     t_release = b.t
     end = np.array(arc[-1])
-    b.path3d([end, end + [0, 0.07, 0]], min_dur=0.3)
+    b.path3d([end, end + [0, 0.07, 0]], phi=PINCH_PHI, min_dur=0.3)
     return {"F": [round(float(F[0]), 5), round(float(F[1]), 5)], "n": [round(float(n[0]), 5), round(float(n[1]), 5)],
             "w": half, "tGrasp": round(t_grasp, 4), "tRelease": round(t_release, 4)}
 
@@ -348,7 +352,7 @@ def plan_towel(lengths, q0, objects: list[dict], fixtures: list[dict]) -> dict:
         fold_center = [sq[0], stack / 2, sq[1]]
         fold_size = [half, stack, half]
         est = b.look(towel["id"], "folded towel", fold_center, fold_size, yaw=math.atan2(n1[1], n1[0]))
-        q_above = _require(pose_at([est[0], 0.1, est[2]], TOOL_DOWN, b.lengths, prefer=b.q), "above the towel")
+        q_above = _require(pose_at([est[0], 0.1, est[2]], PINCH_PHI, b.lengths, prefer=b.q), "above the towel")
         b.joint_move(q_above, roll_to=roll_to_close_along(math.atan2(n1[1], n1[0]), float(q_above[0]), math.pi / 2))
         b.approach_down(stack + 0.03, slow=0.0)
         b.align(towel["id"], "folded towel", fold_center, est, fold_size, yaw=math.atan2(n1[1], n1[0]))
@@ -356,14 +360,14 @@ def plan_towel(lengths, q0, objects: list[dict], fixtures: list[dict]) -> dict:
         b.squeeze(GRIP_CLOTH, FORCE_CLOTH)
         b.held_weight = WEIGHT_TOWEL
         t_pick = b.t
-        b.path3d([[sq[0], stack, sq[1]], [sq[0], CARRY_Y, sq[1]]], min_dur=0.4)
+        b.path3d([[sq[0], stack, sq[1]], [sq[0], CARRY_Y, sq[1]]], phi=PINCH_PHI, min_dur=0.4)
         b.event("Drop it in the laundry basket", "place")
         floor = 0.012
-        b.joint_move(_require(pose_at([basket["x"], CARRY_Y, basket["z"]], TOOL_DOWN, b.lengths, prefer=b.q), "above the basket"))
+        b.joint_move(_require(pose_at([basket["x"], CARRY_Y, basket["z"]], PINCH_PHI, b.lengths, prefer=b.q), "above the basket"))
         b.approach_down(floor + 0.04)
         b.let_go()
         t_drop = b.t
-        b.path3d([[basket["x"], floor + 0.04, basket["z"]], [basket["x"], CARRY_Y, basket["z"]]], min_dur=0.4)
+        b.path3d([[basket["x"], floor + 0.04, basket["z"]], [basket["x"], CARRY_Y, basket["z"]]], phi=PINCH_PHI, min_dur=0.4)
         b.verify("towel", "the basket")
     except Unreachable as exc:
         b.restore(saved)

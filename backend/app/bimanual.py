@@ -28,7 +28,7 @@ import numpy as np
 from .dual import ARM_B_Z, LINE_Z, PARK_A, PARK_B, _link_points
 from .kinematics import fk_world
 from .planner import FPS, TOOL_DOWN, TrajectoryBuilder, Unreachable, pose_at, roll_to_close_along
-from .tasks import CLOTH_EPS, FORCE_CLOTH, GRIP_CLOTH
+from .tasks import CLOTH_EPS, FORCE_CLOTH, GRIP_CLOTH, PINCH_PHI
 
 # Shirt shape (metres). u runs from the collar (0) to the hem (LENGTH);
 # v runs across the body (+v toward arm A).
@@ -103,12 +103,12 @@ def plan_shirt(lengths, objects: list[dict] | None = None) -> dict:
     def say(text: str, kind: str = "info"):
         events.append({"t": round(A.t, 3), "text": text, "kind": kind})
 
-    def go_above(arm: str, p_world, height: float = 0.09, close_along: float | None = None):
+    def go_above(arm: str, p_world, height: float = 0.09, close_along: float | None = None, phi: float = PINCH_PHI):
         """Move above a point. With close_along (an angle in the table plane),
         roll the wrist on the way so the fingers will close in that direction:
         straight across a seam or hem, which is how you pinch cloth cleanly."""
         b = arms[arm]
-        q = pose_at(local(arm, [p_world[0], p_world[1] + height, p_world[2]]), TOOL_DOWN, lengths, prefer=b.q)
+        q = pose_at(local(arm, [p_world[0], p_world[1] + height, p_world[2]]), phi, lengths, prefer=b.q)
         if q is None:
             raise Unreachable(f"above ({p_world[0]:.2f}, {p_world[2]:.2f}) for arm {arm}")
         roll = None
@@ -168,7 +168,7 @@ def plan_shirt(lengths, objects: list[dict] | None = None) -> dict:
             arcs[k] = (F, n, _arc(F, n, s_grab, 0.0))
         dur = max(1.4, float(np.linalg.norm(np.diff(arcs["A"][2], axis=0), axis=1).sum()) / 0.25 * 1.875)
         for k in arms:
-            arms[k].path3d([local(k, p) for p in arcs[k][2]], dur=dur)
+            arms[k].path3d([local(k, p) for p in arcs[k][2]], dur=dur, phi=PINCH_PHI)
         _sync(A, B)
         for k in arms:
             arms[k].let_go()
@@ -180,7 +180,7 @@ def plan_shirt(lengths, objects: list[dict] | None = None) -> dict:
                           "arms": [k], "tGrasp": round(t_grasp, 4), "tRelease": round(t_release, 4)})
         for k in arms:
             tip = local(k, fk_world(arms[k].q, lengths)[0][-1] + np.array([0, 0, base_z[k]]))
-            arms[k].path3d([tip, tip + [0, 0.07, 0]], min_dur=0.3)
+            arms[k].path3d([tip, tip + [0, 0.07, 0]], min_dur=0.3, phi=PINCH_PHI)
         _sync(A, B)
 
         # Both grippers are now over the middle: back out to their own sides
@@ -212,7 +212,7 @@ def plan_shirt(lengths, objects: list[dict] | None = None) -> dict:
         dur = max(1.8, float(np.linalg.norm(np.diff(hem_arcs["A"], axis=0), axis=1).sum()) / 0.25 * 1.875)
         say("Lockstep: both arcs share the exact same timing so the hem stays straight", "sense")
         for k in arms:
-            arms[k].path3d([local(k, p) for p in hem_arcs[k]], dur=dur)
+            arms[k].path3d([local(k, p) for p in hem_arcs[k]], dur=dur, phi=PINCH_PHI)
         _sync(A, B)
         for k in arms:
             arms[k].let_go()
@@ -222,7 +222,7 @@ def plan_shirt(lengths, objects: list[dict] | None = None) -> dict:
                       "arms": ["A", "B"], "tGrasp": round(t_grasp, 4), "tRelease": round(t_release, 4)})
         for k in arms:
             tip = local(k, fk_world(arms[k].q, lengths)[0][-1] + np.array([0, 0, base_z[k]]))
-            arms[k].path3d([tip, tip + [0, 0.07, 0]], min_dur=0.3)
+            arms[k].path3d([tip, tip + [0, 0.07, 0]], min_dur=0.3, phi=PINCH_PHI)
         _sync(A, B)
 
         # 4. Press the crease ----------------------------------------------
@@ -230,7 +230,7 @@ def plan_shirt(lengths, objects: list[dict] | None = None) -> dict:
         stack = 4 * CLOTH_EPS
         press = {"A": _world(HEM_FOLD_U - 0.02, +0.05), "B": _world(HEM_FOLD_U - 0.02, -0.05)}
         for k in arms:
-            go_above(k, press[k] + [0, stack, 0], height=0.06)
+            go_above(k, press[k] + [0, stack, 0], height=0.06, phi=TOOL_DOWN)  # press straight down
         _sync(A, B)
         for k in arms:
             arms[k].approach_down(stack + 0.003)
