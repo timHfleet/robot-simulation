@@ -1,7 +1,7 @@
 # One-click deploy on Render (free tier): New > Blueprint > pick this repo.
 services:
   - type: web
-    name: robot-arm-sim
+    name: robot-2arms-sim
     runtime: docker
     plan: free
     healthCheckPath: /api/health
