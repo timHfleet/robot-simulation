@@ -73,7 +73,7 @@ const TASK_INFO: Record<SceneId, { run: string; idle: string; blurb: string; don
   },
 }
 
-const REPO_URL = 'https://github.com/timHfleet/robot-arm-sim'
+const REPO_URL = 'https://github.com/timHfleet/robot-simulation'
 
 export default function App() {
   const [cfg, setCfg] = useState<Config | null>(null)
