@@ -63,6 +63,22 @@ const TASK_INFO: Record<SceneId, { run: string; idle: string; blurb: string; don
     doneLabel: 'Folded',
     doneValue: (n) => (n ? 'yes, in thirds and half' : 'no'),
   },
+  dishes2: {
+    run: 'Load with 2 arms',
+    idle: 'Press Run: arm A loads the plates while arm B loads the cups',
+    blurb:
+      'The work is split by kind: arm A loads the plates into the bottom rack (on its side) while arm B loads the cups into the top rack (on its side), at the same time. Each dish is planned with the same camera, contact and force-sensing steps as one arm, then checked frame by frame against the other arm before it starts.',
+    doneLabel: 'Loaded',
+    doneValue: (n) => `${n} items`,
+  },
+  laundry2: {
+    run: 'Fold with 2 arms',
+    idle: 'Press Run: two arms fold the towel together',
+    blurb:
+      'Both arms pinch the two far corners and fold the towel in half together, in lockstep so the edge stays straight. Arm A then folds it across while arm B moves clear, and arm B carries the folded towel to the basket while arm A parks.',
+    doneLabel: 'Folded',
+    doneValue: (n) => (n ? 'in quarters' : 'no'),
+  },
   laundry: {
     run: 'Fold towel',
     idle: 'Press Run to fold the towel and put it in the basket',
@@ -72,6 +88,10 @@ const TASK_INFO: Record<SceneId, { run: string; idle: string; blurb: string; don
     doneValue: (n) => (n ? 'in quarters' : 'no'),
   },
 }
+
+/** The same task with one arm or with two. The shirt needs two hands. */
+const ONE_ARM: Partial<Record<SceneId, SceneId>> = { dual: 'blocks', dishes2: 'dishes', laundry2: 'laundry', shirt: 'blocks' }
+const TWO_ARMS: Partial<Record<SceneId, SceneId>> = { blocks: 'dual', dishes: 'dishes2', laundry: 'laundry2' }
 
 const REPO_URL = 'https://github.com/timHfleet/robot-simulation'
 
@@ -94,7 +114,9 @@ export default function App() {
   /** Two-arm mode: the second arm's pose when no plan is playing, and which arm the charts show. */
   const [armBq, setArmBq] = useState<Q>([-Math.PI / 2, 1.658, -2.007, -1.047])
   const [chartArm, setChartArm] = useState<'A' | 'B'>('A')
-  const twoArms = scene === 'dual' || scene === 'shirt'
+  const twoArms = !!cfg?.scenes[scene]?.arms
+  /** Which task the picker shows as selected, whichever arm count is in use. */
+  const taskOf = (id: SceneId): SceneId => (id === 'shirt' ? 'shirt' : (ONE_ARM[id] ?? id))
 
   const [mode, setMode] = useState<Mode>('ik')
   const [method, setMethod] = useState<Method>('analytic')
@@ -323,7 +345,7 @@ export default function App() {
           ? api.dual({ lengths, objects: live.blocks, bins })
           : scene === 'shirt'
           ? api.shirt({ lengths, objects: live.blocks })
-          : api.task({ task: scene, lengths, q0: live.arm, objects: live.blocks, fixtures }),
+          : api.task({ task: scene as 'dishes' | 'laundry' | 'dishes2' | 'laundry2', lengths, q0: live.arm, objects: live.blocks, fixtures }),
     )
 
   /** Switch to (or reset) a task's scene: its objects, bins and fixtures. */
@@ -468,6 +490,7 @@ export default function App() {
     setGrip(1)
     setRoll(0)
     setScene('blocks')
+    setChartArm('A')
     setBlocks(cfg.objects)
     setBins(cfg.bins)
     setFixtures([])
@@ -558,7 +581,7 @@ export default function App() {
       ? {
           verts: plan?.cloth
             ? clothAt(plan, plan.cloth, playT, lengths, base)
-            : (clothVerts ?? (isShirt ? flatShirt([towel.x, towel.z ?? 0]) : flatCloth([towel.x, towel.z ?? 0], towel.size))),
+            : (clothVerts ?? (isShirt ? flatShirt([towel.x, towel.z ?? 0]) : flatCloth([towel.x, towel.z ?? 0], towel.size, towel.yaw ?? undefined))),
           grid: clothGrid,
         }
       : null
@@ -649,12 +672,13 @@ export default function App() {
                     size="sm"
                     value={twoArms ? 2 : 1}
                     onChange={(n) => {
+                      // Keep the current task, switching to its one- or two-arm version.
                       if (n === 2 && !twoArms) {
-                        loadScene('dual')
+                        loadScene(TWO_ARMS[scene] ?? 'dual')
                         setMode('task')
                         setView('3d')
                       } else if (n === 1 && twoArms) {
-                        loadScene('blocks')
+                        loadScene(ONE_ARM[scene] ?? 'blocks')
                       }
                     }}
                     options={[
@@ -1116,11 +1140,14 @@ export default function App() {
                   <div className="mb-1.5 text-xs font-medium text-slate-400">Task</div>
                   <Segmented
                     size="sm"
-                    value={scene}
-                    onChange={(id) => id !== scene && loadScene(id)}
+                    value={taskOf(scene)}
+                    onChange={(id) => {
+                      // Same arm count as now (the shirt always uses two arms).
+                      const next = id === 'shirt' ? 'shirt' : twoArms ? (TWO_ARMS[id] ?? id) : id
+                      if (next !== scene) loadScene(next)
+                    }}
                     options={[
                       { value: 'blocks', label: 'Blocks' },
-                      { value: 'dual', label: '2 arms' },
                       { value: 'dishes', label: 'Dishes' },
                       { value: 'laundry', label: 'Towel' },
                       { value: 'shirt', label: 'Shirt' },
@@ -1184,7 +1211,9 @@ export default function App() {
                                 <div className={`h-full ${a.id === 'A' ? 'bg-orange-400' : 'bg-sky-400'}`} style={{ width: `${Math.round(a.utilization * 100)}%` }} />
                               </div>
                               <span className="w-40 text-right font-mono text-slate-400">
-                                {scene === 'shirt' ? `${a.blocks} grasps · in lockstep` : `${a.blocks} blocks · ${Math.round(a.utilization * 100)}% busy · waited ${fmt(a.waitS, 1)} s`}
+                                {scene === 'shirt' || scene === 'laundry2'
+                                  ? `${a.blocks} grasps · in lockstep`
+                                  : `${a.blocks} ${scene === 'dishes2' ? (a.id === 'A' ? 'plates' : 'cups') : 'blocks'} · ${Math.round(a.utilization * 100)}% busy · waited ${fmt(a.waitS, 1)} s`}
                               </span>
                             </div>
                           ))}

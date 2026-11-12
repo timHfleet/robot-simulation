@@ -463,3 +463,49 @@ def test_shirt_pinches_close_across_seams_and_hem():
         f = _frame_at(frames, hem["tGrasp"])
         assert _mod(f["q"][0] + math.pi / 2 + f["roll"], math.pi) < math.radians(1.5)  # across the hem
         assert abs(f["roll"]) > math.radians(60)  # a real twist of the wrist
+
+
+# ---- two arms on the household tasks ------------------------------------------
+
+def test_dual_short_links_does_not_crash():
+    from app import dual
+    sc = dual.dual_scene()
+    out = dual.plan_dual([0.15, 0.15, 0.17], sc["objects"], sc["bins"])
+    assert out["stats"]["sorted"] == 0 and out["stats"]["skipped"] == 6
+    assert out["dual"]["speedup"] is None
+    assert out["events"][-1]["kind"] == "done"
+
+
+def test_dishes_with_two_arms_loads_everything_faster():
+    from app import teamwork
+    sc = teamwork.dishes2_scene()
+    out = teamwork.plan_dishes2((0.34, 0.30, 0.12), sc["objects"], sc["fixtures"])
+    assert out["stats"]["sorted"] == 6 and out["stats"]["skipped"] == 0
+    assert out["dual"]["minArmGapMm"] >= out["dual"]["clearanceMm"]
+    assert out["dual"]["speedup"] > 1.3
+    a, b = out["dual"]["arms"]
+    assert (a["blocks"], b["blocks"]) == (3, 3)  # A plates, B cups
+
+
+def test_towel_with_two_arms_folds_together_and_b_carries():
+    from app import teamwork
+    sc = teamwork.laundry2_scene()
+    out = teamwork.plan_towel2((0.34, 0.30, 0.12), sc["objects"], sc["fixtures"])
+    assert out["stats"]["sorted"] == 1 and not out["warnings"]
+    cloth = out["cloth"]
+    assert cloth["folds"][0]["arms"] == ["A", "B"] and cloth["folds"][1]["arms"] == ["A"]
+    assert cloth["carry"]["arm"] == "B" and cloth["carry"]["tRelease"] > cloth["carry"]["tGrasp"]
+    ts = [e["t"] for e in out["events"]]
+    assert ts == sorted(ts)
+
+
+def test_task_api_two_arm_variants():
+    from fastapi.testclient import TestClient
+    from app.main import app
+    c = TestClient(app)
+    cfg = c.get("/api/config").json()
+    for name in ("dishes2", "laundry2"):
+        sc = cfg["scenes"][name]
+        assert sc["arms"]
+        r = c.post("/api/task", json={"task": name, "objects": sc["objects"], "fixtures": sc["fixtures"]})
+        assert r.status_code == 200 and r.json()["armB"]["frames"]

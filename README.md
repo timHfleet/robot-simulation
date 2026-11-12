@@ -12,6 +12,8 @@ An interactive simulator for a 4-joint robot arm (a rotating waist plus shoulder
 | **Joints (FK)** | Move the shoulder, elbow and wrist with sliders inside their joint limits and see the tool pose update (forward kinematics). |
 | **Pick & place** | Click a block, then click a bin or any free spot on the table. Commands queue up and run one after another. The planner rejects spots that are out of reach, on a bin, on the base or too close to another block, and says why. A dashed ring on the table shows how far the arm can reach. |
 | **2 arms** | Two arms face each other across a shared work line and split the block sorting. Whichever arm is free takes the nearest block. A scheduler checks every frame of a new job against the other arm's committed motion (points along every link, in 3D) and delays the job until the arms stay at least 8.5 cm apart. Arms tuck in close to their base for big waist turns and park on their own side after each job. Shows per-arm utilization, waiting time and the speed-up over one arm. |
+| **Dishes (2 arms)** | Arm A loads the plates into the bottom rack on its side while arm B loads the cups into the top rack on its side, at the same time. Each dish is planned with the one-arm steps (camera, contact, force sensing) and fitted into the shared schedule with the same frame-by-frame collision check. About 1.7x faster than one arm. |
+| **Towel (2 arms)** | Both arms pinch the two far corners and fold the towel in half together, in lockstep so the edge stays straight. Arm A folds it across while arm B moves clear, then arm B carries the folded towel to the basket while arm A parks. |
 | **Fold shirt (2 arms)** | Both wrist cameras find the collar, sleeve tips and hem corners. Each arm folds its side and sleeve in toward the middle at the same time, then both pinch the hem corners and fold the bottom up in lockstep (identical timing every frame, so the hem stays straight), press the crease (felt by the wrist force sensors) and park. The T-shirt is a masked cloth grid (body, sleeves, neck opening) that bends with the grippers; cloth past a pinch point, like a sleeve, hangs and then lies flat. |
 | **Load dishwasher** | Plates stand in a holder; the arm pinches each top rim, lifts it straight out and slides it into a bottom-rack slot. Cups are grabbed from the side with the gripper level, flipped mouth-down by a wrist turn (with the cup turning about its own centre), and set on the top rack. Bottom rack first. |
 | **Fold towel** | Grab the far edge and swing it over in an arc to fold the towel in half, fold again across the first fold, then drop the folded towel in a laundry basket. The cloth is a 25x25 vertex grid that bends with the gripper. |
@@ -76,6 +78,7 @@ The `Dockerfile` builds the front end and serves it from the Python server as a 
 | `POST /api/plan` | Blocks + bins (+ failure mode) → full sorting trajectory (60 fps frames), block timelines, events, stats |
 | `POST /api/task` | Household task (`dishes` or `laundry`) → trajectory, object timelines and (for the towel) the fold lines for the cloth model |
 | `POST /api/dual` | Two-arm block sorting → both arms' trajectories and sensors, merged events, per-arm stats |
+| `POST /api/task` with `dishes2` / `laundry2` | The two-arm versions of the household tasks |
 | `POST /api/shirt` | Two arms folding a T-shirt → both arms' trajectories and sensors, fold lines for the cloth model |
 | `POST /api/commands` | Pick-and-place commands (block → bin or table spot) → trajectory, with the same failure handling |
 | `POST /api/scene` | Random block layout |
@@ -89,6 +92,7 @@ backend/app/
   tasks.py        dishwasher loading and towel folding
   dual.py         two-arm scheduling with collision checks
   bimanual.py     two arms folding a shirt together (lockstep moves)
+  teamwork.py     two arms on the dishes (split by kind) and the towel (two-handed fold, hand-off)
   main.py         FastAPI routes + static front end
 backend/tests/    pytest suite
 frontend/src/

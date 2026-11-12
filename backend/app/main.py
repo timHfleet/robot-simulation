@@ -6,8 +6,8 @@ from pathlib import Path
 from typing import Literal, Optional
 
 import numpy as np
-from fastapi import FastAPI
-from fastapi.responses import FileResponse
+from fastapi import FastAPI, Request
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, field_validator
 
@@ -16,8 +16,15 @@ from . import planner
 from . import tasks
 from . import dual
 from . import bimanual
+from . import teamwork
 
 app = FastAPI(title="Robot Arm Simulator", version="1.0.0")
+
+
+@app.exception_handler(Exception)
+async def planning_failed(request: Request, exc: Exception):
+    """Unexpected planner failures come back as a readable message, not a bare 500."""
+    return JSONResponse(status_code=500, content={"detail": f"the planner hit a problem ({type(exc).__name__}: {exc}). Try Reset, or longer arm links."})
 
 Lengths = tuple[float, float, float]
 
@@ -105,7 +112,7 @@ class CommandRequest(BaseModel):
 
 
 class TaskRequest(BaseModel):
-    task: Literal["dishes", "laundry"]
+    task: Literal["dishes", "laundry", "dishes2", "laundry2"]
     lengths: Lengths = kin.DEFAULT_LENGTHS
     q0: Q4 = tuple(kin.HOME_Q4)
     objects: list[Block] = Field(max_length=12)
@@ -142,6 +149,8 @@ def config():
             "laundry": {**tasks.laundry_scene(), "bins": []},
             "dual": dual.dual_scene(),
             "shirt": bimanual.shirt_scene(),
+            "dishes2": teamwork.dishes2_scene(),
+            "laundry2": teamwork.laundry2_scene(),
         },
     }
 
@@ -187,7 +196,12 @@ def commands(req: CommandRequest):
 
 @app.post("/api/task")
 def household_task(req: TaskRequest):
-    return tasks.plan_task(req.task, req.lengths, np.array(req.q0), [o.model_dump() for o in req.objects], req.fixtures)
+    objects = [o.model_dump() for o in req.objects]
+    if req.task == "dishes2":
+        return teamwork.plan_dishes2(req.lengths, objects, req.fixtures)
+    if req.task == "laundry2":
+        return teamwork.plan_towel2(req.lengths, objects, req.fixtures)
+    return tasks.plan_task(req.task, req.lengths, np.array(req.q0), objects, req.fixtures)
 
 
 class DualRequest(BaseModel):

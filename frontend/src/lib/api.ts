@@ -7,10 +7,10 @@ async function call<T>(path: string, body?: unknown): Promise<T> {
     body: body === undefined ? undefined : JSON.stringify(body),
   })
   if (!res.ok) {
-    let detail = res.statusText
+    let detail = res.statusText || `server error ${res.status}`
     try {
       const j = await res.json()
-      detail = typeof j.detail === 'string' ? j.detail : JSON.stringify(j.detail)
+      if (j.detail) detail = typeof j.detail === 'string' ? j.detail : JSON.stringify(j.detail)
     } catch {
       /* keep statusText */
     }
@@ -40,7 +40,7 @@ export const api = {
     seed?: number
     faultOffset: number
   }) => call<Plan>('commands', body),
-  task: (body: { task: 'dishes' | 'laundry'; lengths: Lengths; q0: Q; objects: Block[]; fixtures: Fixture[] }) =>
+  task: (body: { task: 'dishes' | 'laundry' | 'dishes2' | 'laundry2'; lengths: Lengths; q0: Q; objects: Block[]; fixtures: Fixture[] }) =>
     call<Plan>('task', body),
   dual: (body: { lengths: Lengths; objects: Block[]; bins: Bin[] }) => call<Plan>('dual', body),
   shirt: (body: { lengths: Lengths; objects: Block[] }) => call<Plan>('shirt', body),

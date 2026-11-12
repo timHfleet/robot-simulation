@@ -163,10 +163,11 @@ export interface ClothGrid {
   color?: string
 }
 
-/** A flat towel: (N+1) x (N+1) vertices, square, edges along n1 and across it. */
-export function flatCloth(center: [number, number], half: number): Float32Array {
-  const len = Math.hypot(center[0], center[1]) || 1
-  const n1 = [center[0] / len, center[1] / len]
+/** A flat towel: (N+1) x (N+1) vertices, square, edges along n1 and across it.
+ * n1 is at angle `yaw` in the table plane (default: pointing away from arm A's base). */
+export function flatCloth(center: [number, number], half: number, yaw?: number): Float32Array {
+  const a = yaw ?? Math.atan2(center[1], center[0])
+  const n1 = [Math.cos(a), Math.sin(a)]
   const n2 = [-n1[1], n1[0]]
   const out = new Float32Array((CLOTH_N + 1) * (CLOTH_N + 1) * 3)
   for (let i = 0; i <= CLOTH_N; i++) {
@@ -298,7 +299,7 @@ function tipAt(plan: Plan, arm: 'A' | 'B', t: number, lengths: Lengths, base: Ve
 
 /** The cloth's shape at time t of a folding plan (towel or shirt). */
 export function clothAt(plan: Plan, cloth: ClothPlan, t: number, lengths: Lengths, base: Vec): Float32Array {
-  const v = cloth.shape === 'shirt' ? flatShirt(cloth.center, cloth.dims ?? SHIRT_DIMS) : flatCloth(cloth.center, cloth.half)
+  const v = cloth.shape === 'shirt' ? flatShirt(cloth.center, cloth.dims ?? SHIRT_DIMS) : flatCloth(cloth.center, cloth.half, cloth.yaw)
   // Folds that happen at the same time (one per arm) work on separate sides.
   for (const f of cloth.folds) {
     if (t < f.tGrasp) break
@@ -310,17 +311,21 @@ export function clothAt(plan: Plan, cloth: ClothPlan, t: number, lengths: Length
   }
   const c = cloth.carry
   if (c && t >= c.tGrasp) {
-    // Carried as a rigid bundle: keep each vertex fixed in the arm's frame.
-    const g = toolInPlane(frameAt(plan, c.tGrasp).q, lengths, base)
-    const now = toolInPlane(frameAt(plan, Math.min(t, c.tRelease)).q, lengths, base)
+    // Carried as a rigid bundle: keep each vertex fixed in the carrying arm's frame.
+    const byB = c.arm === 'B' && !!plan.armB
+    const qAt = (time: number) => (byB ? frameAtFrames(plan.armB!.frames, plan.fps, time).q : frameAt(plan, time).q)
+    const bz = byB ? plan.armB!.baseZ : 0
+    const g = toolInPlane(qAt(c.tGrasp), lengths, base)
+    const now = toolInPlane(qAt(Math.min(t, c.tRelease)), lengths, base)
     let minY = Infinity
     for (let k = 0; k < v.length; k += 3) {
-      const u = v[k] * Math.cos(g.w) + v[k + 2] * Math.sin(g.w)
-      const n = -v[k] * Math.sin(g.w) + v[k + 2] * Math.cos(g.w)
+      const z = v[k + 2] - bz
+      const u = v[k] * Math.cos(g.w) + z * Math.sin(g.w)
+      const n = -v[k] * Math.sin(g.w) + z * Math.cos(g.w)
       const u2 = now.u + (u - g.u)
       v[k + 1] = now.y + (v[k + 1] - g.y)
       v[k] = u2 * Math.cos(now.w) - n * Math.sin(now.w)
-      v[k + 2] = u2 * Math.sin(now.w) + n * Math.cos(now.w)
+      v[k + 2] = u2 * Math.sin(now.w) + n * Math.cos(now.w) + bz
       minY = Math.min(minY, v[k + 1])
     }
     if (t >= c.tRelease) {

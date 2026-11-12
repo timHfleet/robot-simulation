@@ -234,7 +234,9 @@ def _move_cup(b: TrajectoryBuilder, cup: dict, slot: dict, rack: dict):
     cup.update({"x": slot["x"], "y": place_y, "z": slot["z"], "binId": rack["id"], "tilt": -math.pi})
 
 
-def plan_dishes(lengths, q0, objects: list[dict], fixtures: list[dict]) -> dict:
+def plan_dishes(lengths, q0, objects: list[dict], fixtures: list[dict], park_q=None, tuck_u: float | None = None) -> dict:
+    """Load the dishwasher. With park_q the arm ends parked there (two-arm
+    mode) instead of going home."""
     b = TrajectoryBuilder(lengths, np.asarray(q0, dtype=float))
     world = [dict(o) for o in objects]
     racks = {f["kind"]: f for f in fixtures}
@@ -266,9 +268,13 @@ def plan_dishes(lengths, q0, objects: list[dict], fixtures: list[dict]) -> dict:
             skipped += 1
             continue
         done += 1
-    b.event("Return home", "info")
-    b.joint_move(HOME_Q4, roll_to=0.0)
-    b.pause(0.3)
+    if park_q is None:
+        b.event("Return home", "info")
+        b.joint_move(HOME_Q4, roll_to=0.0)
+        b.pause(0.3)
+    else:
+        b.event("Park on its own side", "info")
+        b.transfer(park_q, tuck_u, roll_to=0.0)
     b.event(f"Done: {done} loaded ({sum(o['kind'] == 'plate' and bool(o.get('binId')) for o in world)} plates, "
             f"{sum(o['kind'] == 'cup' and bool(o.get('binId')) for o in world)} cups), {skipped} skipped.", "done")
     return _result(b, done, skipped)

@@ -118,7 +118,7 @@ export interface Keyframe {
   arm?: 'A' | 'B'
 }
 
-export type SceneId = 'blocks' | 'dual' | 'dishes' | 'laundry' | 'shirt'
+export type SceneId = 'blocks' | 'dual' | 'dishes' | 'dishes2' | 'laundry' | 'laundry2' | 'shirt'
 
 export interface Fixture {
   id: string
@@ -148,9 +148,12 @@ export interface ClothPlan {
   towelId: string
   center: [number, number]
   half: number
+  /** Towel orientation (radians); default: facing arm A's base. */
+  yaw?: number
   eps: number
   folds: ClothFold[]
-  carry: { tGrasp: number; tRelease: number; floorY: number; basketId: string } | null
+  /** Carried to the basket by arm A (default) or arm B. */
+  carry: { tGrasp: number; tRelease: number; floorY: number; basketId: string; arm?: 'A' | 'B' } | null
 }
 
 export interface Plan {
