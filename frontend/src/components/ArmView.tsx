@@ -40,12 +40,22 @@ interface Props {
   roll?: number
   /** Shown over the view instead of the scene objects (e.g. 3D-only tasks). */
   note?: string
+  /** Hold-to-grab: the mouse went down on a block (the arm reaches for it and grips while the button is held). */
+  onGrab?: (blockId: string) => void
+  /** The mouse button came up after a grab: let go of the block. */
+  onRelease?: () => void
 }
 
 export default function ArmView(props: Props) {
   const { q, lengths, base, grip, blocks, bins, target, targetOk, trail, interactive, hint, onTarget } = props
   const svgRef = useRef<SVGSVGElement>(null)
   const dragging = useRef(false)
+  const grabbing = useRef(false)
+  /** A block on the arm's line under this point (the side view only shows the x-y plane at z = 0). */
+  const blockAt = ([x, y]: Vec) =>
+    blocks.find(
+      (b) => !b.binId && Math.abs(b.z ?? 0) < 0.03 && Math.abs(x - b.x) < b.size / 2 + 0.012 && Math.abs(y - b.y) < b.size / 2 + 0.012,
+    )
 
   const pose = fk(q, lengths, base)
   const { pts, phi, c } = pose
@@ -96,7 +106,15 @@ export default function ArmView(props: Props) {
     dragging.current = true
     e.currentTarget.setPointerCapture(e.pointerId)
     const p = toWorld(e)
-    if (p) onTarget(p)
+    if (!p) return
+    // Pressed on a block: reach for it and grip it while the button stays down.
+    const block = props.onGrab ? blockAt(p) : undefined
+    if (block) {
+      grabbing.current = true
+      props.onGrab!(block.id)
+      return
+    }
+    onTarget(p)
   }
   const onMove = (e: React.PointerEvent<SVGSVGElement>) => {
     if (!dragging.current || !onTarget) return
@@ -105,6 +123,10 @@ export default function ArmView(props: Props) {
   }
   const onUp = () => {
     dragging.current = false
+    if (grabbing.current) {
+      grabbing.current = false
+      props.onRelease?.()
+    }
   }
 
   const link = (a: Vec, b: Vec, w: number) => (

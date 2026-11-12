@@ -140,6 +140,8 @@ export default function App() {
   const [running, setRunning] = useState<Command | null>(null)
   const [history, setHistory] = useState<{ cmd: Command; outcome: 'done' | 'recovered' | 'skipped' | 'stopped'; note: string }[]>([])
   const [notice, setNotice] = useState<string | null>(null)
+  /** Hold-to-grab in the side view: reaching for a block, or holding it while the mouse button is down. */
+  const [grab, setGrab] = useState<{ id: string; phase: 'reaching' | 'holding' } | null>(null)
   const cmdCount = useRef(0)
 
   // ---- load config --------------------------------------------------------
@@ -194,7 +196,16 @@ export default function App() {
   const shownQ = frame?.q ?? armQ
   const shownGrip = frame?.grip ?? grip
   const shownRoll = frame?.roll ?? roll
-  const shownBlocks = plan ? blocksAt(plan, blocks, playT, lengths, base, graspFraction) : blocks
+  const shownBlocks = plan
+    ? blocksAt(plan, blocks, playT, lengths, base, graspFraction)
+    : grab?.phase === 'holding'
+      ? blocks.map((b) => {
+          if (b.id !== grab.id) return b
+          // Fingertips close at graspFraction of the block's height: the block hangs from the tool point.
+          const t = fk(armQ, lengths, base).pts3[3]
+          return { ...b, x: t[0], y: t[1] + b.size / 2 - graspFraction * b.size, z: t[2], binId: null }
+        })
+      : blocks
   const pose = fk(shownQ, lengths, base)
   const tool = pose.pts[3]
 
@@ -279,11 +290,65 @@ export default function App() {
   }, [])
 
   const onTarget = (p: Vec) => {
+    if (grab?.phase === 'reaching') return // wait until the fingers have closed on it
+    if (grab?.phase === 'holding') {
+      const b = blocks.find((x) => x.id === grab.id)
+      // Carrying: don't push the block through the table.
+      if (b) p = [p[0], Math.max(p[1], graspFraction * b.size + 0.002)]
+    }
     goLive()
     if (mode !== 'ik') setMode('ik')
     setTarget(p)
     runIK(p)
   }
+
+  /** Mouse down on a block: open the gripper and reach for it (fingertips at the grasp height). */
+  const onGrab = (id: string) => {
+    const b = blocks.find((x) => x.id === id)
+    if (!b || plan) return
+    goLive()
+    if (mode !== 'ik') setMode('ik')
+    const p: Vec = [b.x, b.y - b.size / 2 + graspFraction * b.size]
+    setGrip(1)
+    // Roll so the fingers close square on the block's faces (any pair will do: wrap to +/-45 degrees).
+    const yaw = b.yaw ?? 0
+    setRoll(yaw - Math.round(yaw / (Math.PI / 2)) * (Math.PI / 2))
+    setGrab({ id, phase: 'reaching' })
+    setTarget(p)
+    runIK(p)
+  }
+
+  /** Mouse up: let go. A held block drops onto whatever is under it: a bin, another block, or the table. */
+  const onRelease = () => {
+    if (!grab) return
+    if (grab.phase === 'holding') {
+      const held = shownBlocks.find((x) => x.id === grab.id)
+      if (held) {
+        const bin = bins.find((n) => Math.abs(held.x - n.x) < n.width / 2 && Math.abs((held.z ?? 0) - (n.z ?? 0)) < n.width / 2)
+        // Stack on the highest block underneath, if any.
+        const under = blocks.filter(
+          (o) => o.id !== held.id && Math.abs(o.x - held.x) < held.size * 0.8 && Math.abs((o.z ?? 0) - (held.z ?? 0)) < held.size * 0.8,
+        )
+        const floor = under.reduce((top, o) => Math.max(top, o.y + o.size / 2), 0)
+        const x = bin ? Math.min(Math.max(held.x, bin.x - bin.width / 2 + held.size / 2), bin.x + bin.width / 2 - held.size / 2) : held.x
+        setBlocks((bs) =>
+          bs.map((o) => (o.id === held.id ? { ...o, x, y: floor + held.size / 2, z: held.z, binId: bin ? bin.id : null } : o)),
+        )
+      }
+    }
+    setGrip(1)
+    setGrab(null)
+  }
+
+  // Hold-to-grab: once the gripper has arrived at the block (and the button is still down), close on it.
+  useEffect(() => {
+    if (grab?.phase !== 'reaching' || !target) return
+    const t = fk(armQ, lengths, base).pts[3]
+    if (Math.hypot(t[0] - target[0], t[1] - target[1]) < 0.006) {
+      setGrip(0)
+      setGrab({ id: grab.id, phase: 'holding' })
+    }
+  }, [armQ, grab, target, lengths, base])
 
   // Re-solve when the solver settings or the arm itself change.
   useEffect(() => {
@@ -555,7 +620,11 @@ export default function App() {
     mode === 'command'
       ? commandHint
       : mode === 'ik'
-      ? 'Click or drag anywhere to move the gripper there'
+      ? grab?.phase === 'reaching'
+        ? 'Keep holding: the arm is reaching for the block…'
+        : grab?.phase === 'holding'
+          ? 'Holding it: drag to carry, let go of the mouse button to drop it'
+          : 'Click or drag to move the gripper · hold the mouse on a block to pick it up'
       : mode === 'joints'
         ? 'Drive each joint with the sliders (forward kinematics)'
         : plan
@@ -756,6 +825,8 @@ export default function App() {
                 pickMode={mode === 'command' && scene === 'blocks'}
                 selectedId={selected}
                 onPick={onPick}
+                onGrab={scene === 'blocks' && mode !== 'command' ? onGrab : undefined}
+                onRelease={onRelease}
                 note={scene === 'blocks' ? undefined : 'The side view only draws the one-arm block scene. Switch to 3D to watch this task.'}
               />
               )}
