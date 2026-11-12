@@ -212,10 +212,12 @@ export default function App() {
   const goLive = useCallback((): { q: Q; arm: Q; blocks: Block[] } => {
     if (!plan) return { q, arm: servo.current.q, blocks }
     const f = frameAt(plan, playT)
-    // A block that was in the gripper goes back to where it started on the table.
+    // Whatever either arm is holding goes back to where it started (on the table, or in the plate holder).
+    const fB = plan.armB ? frameAtFrames(plan.armB.frames, plan.fps, playT) : null
+    const held = new Set([f.holding, fB?.holding].filter(Boolean))
     const b = blocksAt(plan, blocks, playT, lengths, base, graspFraction).map((blk, i) =>
       // A block caught mid-fall lands where it was falling.
-      blk.id === f.holding
+      held.has(blk.id)
         ? blocks[i]
         : (blk.kind ?? 'block') === 'block'
           ? { ...blk, y: blk.size / 2 }

@@ -24,6 +24,7 @@ in its own coordinates. A scheduler then decides when each job may start:
 from __future__ import annotations
 
 import math
+import re
 
 import numpy as np
 
@@ -183,7 +184,11 @@ class Schedule:
         for e in job["events"]:
             if e["text"].startswith("Done:") or e["text"] == "Return home":
                 continue
-            self.events.append({"t": round(e["t"] + t0, 3), "text": f"[Arm {arm.id}] {e['text']}", "kind": e["kind"]})
+            text = e["text"]
+            if arm.base_z:
+                # The planner wrote positions in the arm's own coordinates: report table coordinates.
+                text = re.sub(r"z=(-?\d+\.\d+)", lambda m: f"z={float(m.group(1)) + arm.base_z:.2f}", text)
+            self.events.append({"t": round(e["t"] + t0, 3), "text": f"[Arm {arm.id}] {text}", "kind": e["kind"]})
         for oid, kfs in job["timeline"].items():
             for kf in kfs:
                 kf = dict(kf)
