@@ -3,6 +3,7 @@ import clsx from 'clsx'
 import { Crosshair, Github, Pause, Play, RotateCcw, Shuffle, SlidersHorizontal, Boxes, Loader2, Home, Hand, X } from 'lucide-react'
 import ArmView, { COLOR } from './components/ArmView'
 import Arm3D, { type PickTarget } from './components/Arm3D'
+import MobileRobot from './components/MobileRobot'
 import JointChart, { JOINT_COLORS, JOINT_LABELS, ROLL_COLOR, ROLL_LABEL } from './components/JointChart'
 import SensorChart, { SENSOR_COLORS } from './components/SensorChart'
 import { Button, Card, Segmented, Slider, Stat } from './components/ui'
@@ -119,6 +120,8 @@ export default function App() {
   const taskOf = (id: SceneId): SceneId => (id === 'shirt' ? 'shirt' : (ONE_ARM[id] ?? id))
 
   const [mode, setMode] = useState<Mode>('ik')
+  /** Which simulator is shown: the table-top arm, or the wheel-legged robot that carries it. */
+  const [page, setPage] = useState<'arm' | 'robot'>('arm')
   const [method, setMethod] = useState<Method>('analytic')
   const [elbow, setElbow] = useState<Elbow>('up')
   const [toolAngle, setToolAngle] = useState(-90)
@@ -710,6 +713,17 @@ export default function App() {
             </div>
           </div>
           <div className="flex items-center gap-2">
+            <div className="w-56">
+              <Segmented
+                size="sm"
+                value={page}
+                onChange={setPage}
+                options={[
+                  { value: 'arm', label: 'Arm on table' },
+                  { value: 'robot', label: 'Mobile robot' },
+                ]}
+              />
+            </div>
             <Button onClick={resetAll} title="Reset arm, blocks and link lengths">
               <Home className="h-4 w-4" /> Reset
             </Button>
@@ -731,6 +745,9 @@ export default function App() {
         </div>
       )}
 
+      {page === 'robot' ? (
+        <MobileRobot />
+      ) : (
       <main className="mx-auto grid max-w-[1400px] gap-4 px-4 py-4 sm:px-6 lg:grid-cols-[minmax(0,1fr)_360px]">
         <div className="min-w-0 space-y-4">
           <Card
@@ -1368,6 +1385,7 @@ export default function App() {
           </Card>
         </aside>
       </main>
+      )}
 
       <footer className="mx-auto max-w-[1400px] px-4 pb-6 text-xs text-slate-500 sm:px-6">
         Python (FastAPI + NumPy) kinematics and motion planning · React + TypeScript front end
