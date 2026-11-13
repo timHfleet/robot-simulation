@@ -39,7 +39,7 @@ Then open http://localhost:5173.
 
 ## Deploy
 
-`render.yaml` deploys the built front end as a static site on [Render](https://render.com) (**New → Blueprint**, pick this repo). Any static host works: `npm run build` writes the site to `frontend/dist`.
+`render.yaml` deploys to [Render](https://render.com) (**New → Blueprint**, pick this repo). The `Dockerfile` builds the front end and serves it with nginx (config in `deploy/`), with `/api/health` for Render's health check. Any static host also works: `npm run build` writes the site to `frontend/dist`.
 
 ## Project layout
 
