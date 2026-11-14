@@ -3,7 +3,7 @@ import * as THREE from 'three'
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
 import { TransformControls } from 'three/examples/jsm/controls/TransformControls.js'
 import { RoundedBoxGeometry } from 'three/examples/jsm/geometries/RoundedBoxGeometry.js'
-import { ArrowDown, ArrowLeft, ArrowRight, ArrowUp, Crosshair, Hand, SlidersHorizontal, Square } from 'lucide-react'
+import { ArrowDown, ArrowLeft, ArrowRight, ArrowUp, Boxes, Crosshair, Hand, RotateCcw, Shirt, SlidersHorizontal, Square, UtensilsCrossed, WashingMachine } from 'lucide-react'
 import clsx from 'clsx'
 import { approach, clamp, deg, fmt, rad, servoStep, wrap } from '../lib/math'
 import {
@@ -12,18 +12,25 @@ import {
   DOF,
   FORE,
   UPPER,
+  WAIST,
+  WAIST_X,
   fk,
   gravityTorques,
   jointAxis,
   jointOffset,
   mirrorPoint,
   solveIK,
+  torsoBase,
+  waistFor,
   type DirGoal,
   type IKResult,
   type Side,
   type V3,
 } from '../lib/kinematics'
 import { Button, Card, Segmented, Slider, Stat } from './ui'
+import { DOCKS, ITEMS, KITCHEN, STAGING, doorAngleFor, foldAngleFor, furnitureRects, lidAngleFor, toLocal, type StationId } from '../lib/stations'
+import { TASKS, planTask, type Act, type Mechanism, type PlanCtx, type TaskId } from '../lib/tasks'
+import { buildStations, type Mech, type Stations } from './stationProps'
 
 // ---------------------------------------------------------------------------
 // Geometry (metres). Robot frame: x forward, y up, z to the robot's right.
@@ -62,29 +69,45 @@ type Obstacle =
   | { kind: 'barrel'; x: number; z: number; r: number; h: number; color: string }
 
 const OBSTACLES: Obstacle[] = [
-  { kind: 'crate', x: 2.1, z: -1.2, w: 0.6, d: 0.6, h: 0.5, color: '#a16207' },
-  { kind: 'crate', x: 2.6, z: -0.5, w: 0.45, d: 0.45, h: 0.35, color: '#b45309' },
-  { kind: 'crate', x: -2.2, z: 1.8, w: 1.2, d: 0.5, h: 0.6, color: '#92400e' },
-  { kind: 'crate', x: -1.4, z: -2.6, w: 0.5, d: 0.9, h: 0.45, color: '#a16207' },
   { kind: 'crate', x: 3.6, z: 2.4, w: 0.7, d: 0.7, h: 0.7, color: '#b45309' },
-  { kind: 'crate', x: 1.3, z: 0.9, w: 0.5, d: 0.5, h: 0.75, color: '#a16207' },
-  { kind: 'barrel', x: 0.9, z: 2.2, r: 0.2, h: 0.55, color: '#2563eb' },
-  { kind: 'barrel', x: 1.4, z: 2.5, r: 0.2, h: 0.55, color: '#dc2626' },
-  { kind: 'barrel', x: -3.2, z: -0.8, r: 0.22, h: 0.6, color: '#16a34a' },
-  { kind: 'barrel', x: 0.2, z: -3.3, r: 0.18, h: 0.5, color: '#eab308' },
+  { kind: 'crate', x: -3.4, z: -3.0, w: 0.9, d: 0.5, h: 0.6, color: '#92400e' },
+  { kind: 'crate', x: 3.2, z: -3.4, w: 0.5, d: 0.5, h: 0.45, color: '#a16207' },
+  { kind: 'barrel', x: 3.6, z: -2.3, r: 0.22, h: 0.6, color: '#16a34a' },
+  { kind: 'barrel', x: -3.5, z: 3.1, r: 0.2, h: 0.55, color: '#2563eb' },
+  { kind: 'barrel', x: -3.0, z: 3.4, r: 0.2, h: 0.55, color: '#dc2626' },
 ]
+const FURNITURE_RECTS = furnitureRects()
+/** The base's footprint: front and back from the centre, and half its width. */
+const FOOT = { front: 0.33, back: 0.33, half: 0.29 }
 
-function blockedAt(x: number, z: number) {
-  if (Math.abs(x) > BOUNDS - ROBOT_R || Math.abs(z) > BOUNDS - ROBOT_R) return true
-  for (const o of OBSTACLES) {
-    if (o.kind === 'crate') {
-      const cx = Math.max(o.x - o.w / 2, Math.min(x, o.x + o.w / 2))
-      const cz = Math.max(o.z - o.d / 2, Math.min(z, o.z + o.d / 2))
-      if (Math.hypot(x - cx, z - cz) < ROBOT_R) return true
-    } else if (Math.hypot(x - o.x, z - o.z) < ROBOT_R + o.r) return true
+/** True when the base, centred at (x, z) and facing yaw, would overlap furniture, an obstacle or a wall. */
+function blockedAt(x: number, z: number, yaw: number) {
+  if (Math.abs(x) > BOUNDS - 0.45 || Math.abs(z) > BOUNDS - 0.45) return true
+  const c = Math.cos(yaw)
+  const sn = Math.sin(yaw)
+  const pts: [number, number][] = []
+  for (let i = 0; i <= 6; i++) {
+    const u = -FOOT.back + ((FOOT.front + FOOT.back) * i) / 6
+    pts.push([u, -FOOT.half], [u, FOOT.half])
+  }
+  for (let i = 1; i < 6; i++) {
+    const v = -FOOT.half + (2 * FOOT.half * i) / 6
+    pts.push([FOOT.front, v], [-FOOT.back, v], [0, v])
+  }
+  for (const [u, v] of pts) {
+    const px = x + c * u + sn * v
+    const pz = z - sn * u + c * v
+    for (const r of FURNITURE_RECTS) if (px > r.x0 && px < r.x1 && pz > r.z0 && pz < r.z1) return true
+    for (const o of OBSTACLES) {
+      if (o.kind === 'crate') {
+        if (Math.abs(px - o.x) < o.w / 2 && Math.abs(pz - o.z) < o.d / 2) return true
+      } else if (Math.hypot(px - o.x, pz - o.z) < o.r) return true
+    }
   }
   return false
 }
+
+type Seg = { kind: 'turn'; yaw: number } | { kind: 'line'; x: number; z: number; vmax: number }
 
 // ---------------------------------------------------------------------------
 // Poses (degrees, in ARM order: shoulder pitch, roll, twist, elbow, forearm twist, wrist pitch, wrist yaw)
@@ -291,7 +314,7 @@ function buildArm(side: Side, carriage: THREE.Group): ArmRig {
 
 function poseArm(arm: ArmRig, q: number[], grip: number) {
   arm.joints.forEach((g, i) => g.quaternion.setFromAxisAngle(arm.axes[i], q[i]))
-  const a = 0.06 + grip * 0.5
+  const a = -0.3 + grip * 0.86
   arm.fingers.forEach((f) => (f.rotation.x = -Math.sign(f.position.z) * a))
 }
 
@@ -401,6 +424,24 @@ function buildRobot() {
     robot.add(shadowed(caster))
   }
 
+  // Waist: a turntable on the base. Everything above it (column, torso, arms,
+  // head) turns about a vertical axis through the column.
+  const waist = new THREE.Group()
+  waist.position.set(WAIST_X, 0, 0)
+  robot.add(waist)
+  const upper = new THREE.Group()
+  upper.position.x = -WAIST_X
+  waist.add(upper)
+  const bearing = new THREE.Mesh(new THREE.CylinderGeometry(0.14, 0.14, 0.012, 56), MAT.alu)
+  bearing.position.set(WAIST_X, BASE_TOP + 0.05, 0)
+  robot.add(shadowed(bearing))
+  const waistMotor = actuator(0.12, 0.045, new THREE.Vector3(0, 1, 0), 1)
+  waistMotor.group.position.set(0, BASE_TOP + 0.085, 0)
+  waist.add(waistMotor.group)
+  const mark = new THREE.Mesh(new THREE.BoxGeometry(0.03, 0.012, 0.012), MAT.accent)
+  mark.position.set(0.125, BASE_TOP + 0.085, 0)
+  waist.add(mark)
+
   // Lift column: black body, linear rails and a lead screw on the front, white back panel.
   const colH = COLUMN.top - BASE_TOP
   const column = rbox(COLUMN.d, colH, COLUMN.w, 0.012, mat(C.black, { roughness: 0.55, metalness: 0.35 }))
@@ -410,17 +451,17 @@ function buildRobot() {
   for (const z of [-0.045, 0.045]) {
     const rail = new THREE.Mesh(new THREE.BoxGeometry(0.008, colH - 0.08, 0.014), MAT.alu)
     rail.position.set(COLUMN.x + COLUMN.d / 2 + 0.004, BASE_TOP + colH / 2, z)
-    robot.add(shadowed(rail))
+    upper.add(shadowed(rail))
   }
   const screw = new THREE.Mesh(new THREE.CylinderGeometry(0.007, 0.007, colH - 0.08, 10), MAT.bolt)
   screw.position.set(COLUMN.x + COLUMN.d / 2 + 0.01, BASE_TOP + colH / 2, 0)
   const topCap = rbox(COLUMN.d + 0.03, 0.03, COLUMN.w + 0.03, 0.01, MAT.white)
   topCap.position.set(COLUMN.x - 0.008, COLUMN.top, 0)
-  robot.add(column, back, shadowed(screw), topCap)
+  upper.add(column, back, shadowed(screw), topCap)
 
   // Torso carriage rides the rails and carries both shoulders.
   const carriage = new THREE.Group()
-  robot.add(carriage)
+  upper.add(carriage)
   const torso = rbox(0.21, 0.19, 0.3, 0.05, MAT.white)
   torso.position.set(COLUMN.x + 0.03, 0.01, 0)
   const chest = rbox(0.02, 0.13, 0.17, 0.008, dark)
@@ -436,8 +477,8 @@ function buildRobot() {
     carriage.add(yoke)
   }
   const arms = { L: buildArm('L', carriage), R: buildArm('R', carriage) }
-  const head = buildHead(robot)
-  return { robot, carriage, wheels, arms, head, brakeMats, stripMat }
+  const head = buildHead(upper)
+  return { robot, waist, waistLed: waistMotor.ledMat, carriage, wheels, arms, head, brakeMats, stripMat }
 }
 
 interface World {
@@ -450,10 +491,13 @@ interface World {
   floor: THREE.Mesh
   pickables: THREE.Object3D[]
   robot: THREE.Group
+  waist: THREE.Group
+  waistLed: THREE.MeshStandardMaterial
   carriage: THREE.Group
   wheels: { spin: THREE.Group; s: number; phi: number }[]
   arms: Record<Side, ArmRig>
   head: Head
+  stations: Stations
   targets: Record<Side, THREE.Group>
   reachLines: Record<Side, THREE.Line>
   goal: THREE.Group
@@ -542,6 +586,8 @@ function buildWorld(el: HTMLDivElement): World {
 
   const parts = buildRobot()
   scene.add(parts.robot)
+  const stations = buildStations(scene)
+  pickables.push(...stations.pickables)
 
   // IK hand targets: children of the robot, so they ride along when it drives.
   const mkTarget = (color: string) => {
@@ -590,7 +636,7 @@ function buildWorld(el: HTMLDivElement): World {
   trail.frustumCulled = false
   scene.add(trail)
 
-  return { renderer, scene, camera, controls, gizmo, sun, floor, pickables, goal, trail, targets, reachLines, ...parts }
+  return { renderer, scene, camera, controls, gizmo, sun, floor, pickables, goal, trail, targets, reachLines, stations, ...parts }
 }
 
 // ---------------------------------------------------------------------------
@@ -615,6 +661,10 @@ interface Settings {
   targets: Record<Side, V3>
   dirGoal: DirGoal
   payload: number
+  /** Simulation speed while running tasks. */
+  speed: number
+  /** Waist angle set by the slider (joint mode). */
+  waist: number
 }
 
 interface ArmTele {
@@ -633,8 +683,11 @@ interface Telemetry {
   odo: number
   state: string
   lift: number
+  waist: number
   arms: Record<Side, ArmTele>
   ik: Record<Side, IKResult | null>
+  task: { id: TaskId; label: string; step: number; total: number; text: string } | null
+  log: string[]
 }
 
 const KEYMAP: Record<string, string> = {
@@ -661,7 +714,9 @@ export default function Humanoid() {
   const resetRef = useRef<() => void>(() => {})
   const stopRef = useRef<() => void>(() => {})
   const syncRef = useRef<() => Record<Side, number[]>>(() => ({ L: REST, R: REST }))
+  const waistRef = useRef<() => number>(() => 0)
   const waveRef = useRef(false)
+  const taskRef = useRef<{ start: (id: TaskId) => void; stop: () => void; resetScene: () => void }>({ start: () => {}, stop: () => {}, resetScene: () => {} })
   const [settings, setSettings] = useState<Settings>({
     maxSpeed: 0.7,
     lift: 1.12,
@@ -676,6 +731,8 @@ export default function Humanoid() {
     targets: { R: [0.45, 0.92, 0.27], L: [0.45, 0.92, -0.27] },
     dirGoal: 'free',
     payload: 0,
+    speed: 2,
+    waist: 0,
   })
   const settingsRef = useRef(settings)
   settingsRef.current = settings
@@ -687,8 +744,11 @@ export default function Humanoid() {
     odo: 0,
     state: 'Idle',
     lift: settings.lift,
+    waist: 0,
     arms: { L: emptyArm(), R: emptyArm() },
     ik: { L: null, R: null },
+    task: null,
+    log: [],
   })
   const set = <K extends keyof Settings>(k: K, v: Settings[K]) => setSettings((s) => ({ ...s, [k]: v }))
   const shownSide: Side = settings.armSel === 'both' ? 'R' : settings.armSel
@@ -715,7 +775,7 @@ export default function Humanoid() {
   const setMode = (m: ArmMode) =>
     setSettings((s) => {
       // Going back to joint control: start from wherever IK left the arms.
-      if (m === 'joint' && s.armMode === 'ik') return { ...s, armMode: m, arms: syncRef.current() }
+      if (m === 'joint' && s.armMode === 'ik') return { ...s, armMode: m, arms: syncRef.current(), waist: waistRef.current() }
       return { ...s, armMode: m }
     })
 
@@ -733,6 +793,9 @@ export default function Humanoid() {
       wz: 0,
       lift: st0.lift,
       liftV: 0,
+      waist: 0,
+      waistV: 0,
+      waistT: 0,
       odo: 0,
       goal: null as { x: number; z: number } | null,
       blockedFor: 0,
@@ -751,10 +814,23 @@ export default function Humanoid() {
       waveUntil: -1,
       tau: { L: new Array(DOF).fill(0), R: new Array(DOF).fill(0) } as Record<Side, number[]>,
       trail: [] as THREE.Vector3[],
+      // Task runner
+      time: 0,
+      path: [] as Seg[],
+      blockedT: 0,
+      task: null as null | { id: TaskId; label: string; acts: Act[]; i: number; started: boolean; text: string },
+      log: [] as string[],
+      gripT: { ...st0.grip } as Record<Side, number>,
+      liftT: null as number | null,
+      slow: { L: 1, R: 1 } as Record<Side, number>,
+      binds: {} as Partial<Record<Side, { mech: Mechanism; a0: number; out0: number }>>,
+      anims: [] as { key: 'door' | 'lowerRack' | 'upperRack' | 'lid'; from: number; to: number; t: number; dur: number }[],
+      look: null as THREE.Vector3 | null,
     }
     const prevPos = new THREE.Vector3()
     resetRef.current = () => {
-      Object.assign(sim, { x: 0, z: 0, yaw: 0, v: 0, wz: 0, odo: 0, goal: null, trail: [] })
+      if (sim.task) endTask('Stopped')
+      Object.assign(sim, { x: 0, z: 0, yaw: 0, v: 0, wz: 0, odo: 0, goal: null, trail: [], path: [] })
       w.camera.position.copy(CAM_OFFSET)
       w.controls.target.copy(CAM_LOOK)
       prevPos.set(0, 0, 0)
@@ -763,6 +839,240 @@ export default function Humanoid() {
       sim.goal = null
     }
     syncRef.current = () => ({ L: [...sim.qT.L], R: [...sim.qT.R] })
+    waistRef.current = () => sim.waistT
+
+    // ---------------------------------------------------------------- task runner
+    const S = w.stations
+    const say = (text: string) => {
+      sim.log = [...sim.log.slice(-7), text]
+    }
+    const planCtx = (): PlanCtx => ({
+      item: (id) => {
+        const o = S.items.get(id)!
+        o.updateWorldMatrix(true, false)
+        return { pos: o.getWorldPosition(new THREE.Vector3()), quat: o.getWorldQuaternion(new THREE.Quaternion()), where: S.where.get(id) ?? 'home' }
+      },
+      ids: (kind) => ITEMS.filter((d) => d.kind === kind).map((d) => d.id),
+    })
+    const stagingOf = (st: StationId) => {
+      const d = DOCKS[st]
+      return { x: d.x - Math.cos(d.yaw) * STAGING, z: d.z + Math.sin(d.yaw) * STAGING }
+    }
+    /** Path to a dock: back out of the current dock if parked at one, turn, drive to the staging point, turn, roll in. */
+    const pathTo = (to: StationId): Seg[] => {
+      const segs: Seg[] = []
+      let cx = sim.x
+      let cz = sim.z
+      for (const id of Object.keys(DOCKS) as StationId[]) {
+        const d = DOCKS[id]
+        if (Math.hypot(sim.x - d.x, sim.z - d.z) < 0.15 && Math.abs(wrap(sim.yaw - d.yaw)) < 0.25) {
+          if (id === to) return [{ kind: 'turn', yaw: d.yaw }, { kind: 'line', x: d.x, z: d.z, vmax: 0.25 }]
+          const sg = stagingOf(id)
+          segs.push({ kind: 'line', x: sg.x, z: sg.z, vmax: 0.3 })
+          cx = sg.x
+          cz = sg.z
+        }
+      }
+      const d = DOCKS[to]
+      const sg = stagingOf(to)
+      if (Math.hypot(sg.x - cx, sg.z - cz) > 0.03) segs.push({ kind: 'turn', yaw: Math.atan2(-(sg.z - cz), sg.x - cx) }, { kind: 'line', x: sg.x, z: sg.z, vmax: 0.8 })
+      segs.push({ kind: 'turn', yaw: d.yaw }, { kind: 'line', x: d.x, z: d.z, vmax: 0.25 })
+      return segs
+    }
+    const endTask = (msg: string | null) => {
+      sim.task = null
+      sim.path = []
+      sim.binds = {}
+      sim.slow = { L: 1, R: 1 }
+      sim.look = null
+      const arms = { L: [...sim.qT.L], R: [...sim.qT.R] }
+      const grip = { ...sim.gripT }
+      const lift = sim.liftT ?? settingsRef.current.lift
+      sim.liftT = null
+      // Hand control back to the panels exactly where the task left the robot.
+      const waist = sim.waistT
+      settingsRef.current = { ...settingsRef.current, armMode: 'joint', arms, grip, lift, waist }
+      setSettings((s) => ({ ...s, armMode: 'joint', arms, grip, lift, waist }))
+      if (msg) say(msg)
+    }
+    taskRef.current = {
+      start: (id) => {
+        if (sim.task) return
+        w.scene.updateMatrixWorld(true)
+        const acts = planTask(id, planCtx(), { foldsDone: S.mech.folds[2] > 3 })
+        const meta = TASKS.find((x) => x.id === id)!
+        if (!acts.length) {
+          say(`${meta.label}: nothing left to do. Press Reset scene to set it up again.`)
+          return
+        }
+        sim.goal = null
+        sim.gripT = { ...sim.grip }
+        sim.liftT = sim.lift
+        sim.task = { id, label: meta.label, acts, i: 0, started: false, text: '' }
+        settingsRef.current = { ...settingsRef.current, armMode: 'joint' }
+        setSettings((s) => ({ ...s, armMode: 'joint' }))
+      },
+      stop: () => sim.task && endTask('Stopped'),
+      resetScene: () => {
+        if (sim.task) endTask(null)
+        S.reset()
+        say('Scene reset')
+      },
+    }
+    /** Robot-frame point to the frame of the torso turned by the waist. */
+    const torsoFrame = (l: THREE.Vector3) => l.clone().sub(new THREE.Vector3(WAIST_X, 0, 0)).applyAxisAngle(new THREE.Vector3(0, 1, 0), -sim.waist).add(new THREE.Vector3(WAIST_X, 0, 0))
+    const robotFrame = (p: THREE.Vector3) => p.clone().sub(new THREE.Vector3(sim.x, 0, sim.z)).applyAxisAngle(new THREE.Vector3(0, 1, 0), -sim.yaw)
+    const mechStation = (m: Mechanism): StationId => (m.kind === 'lid' ? 'washer' : m.kind === 'fold' ? 'laundry' : 'kitchen')
+    const tcpWorld = (side: Side) => w.arms[side].tcp.getWorldPosition(new THREE.Vector3())
+
+    const begin = (a: Act) => {
+      const T = sim.task!
+      switch (a.k) {
+        case 'say':
+          say(a.text)
+          T.text = a.text
+          break
+        case 'drive':
+          sim.path = pathTo(a.to)
+          sim.blockedT = 0
+          break
+        case 'nudge':
+          sim.path = [{ kind: 'line', x: sim.x + Math.cos(sim.yaw) * a.d, z: sim.z - Math.sin(sim.yaw) * a.d, vmax: 0.25 }]
+          sim.blockedT = 0
+          break
+        case 'lift':
+          sim.liftT = a.h
+          break
+        case 'move': {
+          // The waist turns so the working shoulder(s) are a comfortable distance from their targets.
+          const goals = SIDES.flatMap((side) => {
+            const g = a.arms[side]
+            return g && !Array.isArray(g) ? [{ side, p: robotFrame(g.pos) }] : []
+          })
+          if (goals.length) sim.waistT = waistFor(goals)
+          else if (a.arms.L && a.arms.R) sim.waistT = 0
+          const base = torsoBase(sim.liftT ?? sim.lift, sim.waistT)
+          for (const side of SIDES) {
+            const goal = a.arms[side]
+            if (!goal) continue
+            sim.slow[side] = a.slow ? 0.35 : 1
+            if (Array.isArray(goal)) {
+              sim.qT[side] = [...goal]
+              continue
+            }
+            const inv = (v: THREE.Vector3) => v.clone().applyAxisAngle(new THREE.Vector3(0, 1, 0), -sim.yaw)
+            const res = solveIK(side, sim.qT[side], base, robotFrame(goal.pos), { dir: inv(goal.approach), close: goal.close ? inv(goal.close) : null, rest: REST })
+            sim.qT[side] = res.q
+            sim.ik[side] = res
+            sim.look = goal.pos.clone()
+          }
+          break
+        }
+        case 'grip':
+          sim.gripT[a.side] = a.g
+          break
+        case 'grab': {
+          const o = S.items.get(a.item)!
+          o.userData.drop = null
+          w.arms[a.side].joints[6].attach(o)
+          S.where.set(a.item, 'held')
+          break
+        }
+        case 'release': {
+          const o = S.items.get(a.item)!
+          S.containers[a.container].attach(o)
+          o.userData.drop = {
+            p0: o.position.clone(),
+            q0: o.quaternion.clone(),
+            p1: new THREE.Vector3(...a.pos),
+            q1: new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), a.yaw),
+            t: 0,
+          }
+          S.where.set(a.item, a.where)
+          break
+        }
+        case 'bind': {
+          const local = toLocal(mechStation(a.mech), tcpWorld(a.side))
+          const out0 = a.mech.kind === 'rack' ? (a.mech.rack === 'lower' ? S.mech.lowerRack : S.mech.upperRack) : 0
+          sim.binds[a.side] = { mech: a.mech, a0: local.x, out0 }
+          break
+        }
+        case 'unbind':
+          delete sim.binds[a.side]
+          break
+        case 'animate':
+          sim.anims.push({ key: a.key, from: S.mech[a.key], to: a.to, t: 0, dur: a.dur })
+          break
+        case 'set':
+          S.mech[a.key] = a.value
+          break
+      }
+    }
+    const finished = (a: Act) => {
+      switch (a.k) {
+        case 'drive':
+        case 'nudge':
+          return sim.path.length === 0
+        case 'lift':
+          return Math.abs(sim.lift - a.h) < 0.002 && Math.abs(sim.liftV) < 0.01
+        case 'move':
+          return SIDES.every((side) => {
+            if (!a.arms[side]) return true
+            let err = 0
+            let vel = 0
+            for (let i = 0; i < DOF; i++) {
+              err = Math.max(err, Math.abs(sim.q[side][i] - sim.qT[side][i]))
+              vel = Math.max(vel, Math.abs(sim.qv[side][i]))
+            }
+            return a.via ? err < 0.06 : err < 0.004 && vel < 0.05
+          }) && (a.via ? Math.abs(sim.waist - sim.waistT) < 0.06 : Math.abs(sim.waist - sim.waistT) < 0.004 && Math.abs(sim.waistV) < 0.05)
+        case 'grip':
+          return Math.abs(sim.grip[a.side] - a.g) < 0.01
+        case 'animate':
+          return !sim.anims.some((x) => x.key === a.key)
+        default:
+          return true
+      }
+    }
+    const runTask = () => {
+      for (let guard = 0; guard < 25 && sim.task; guard++) {
+        const T = sim.task
+        const a = T.acts[T.i]
+        if (!a) {
+          endTask(null)
+          return
+        }
+        if (!T.started) {
+          T.started = true
+          begin(a)
+        }
+        if (!finished(a)) return
+        T.i++
+        T.started = false
+      }
+    }
+    /** Doors, racks, the lid and the shirt follow a hand that holds them. */
+    const updateBindings = (mech: Mech) => {
+      for (const side of SIDES) {
+        const b = sim.binds[side]
+        if (!b) continue
+        const local = toLocal(mechStation(b.mech), tcpWorld(side))
+        const m = b.mech
+        if (m.kind === 'door') {
+          let phi = clamp(doorAngleFor(m.u, m.s, local.x, local.y), 0, Math.PI / 2)
+          if (m.pushOnly) phi = Math.min(mech.door, phi)
+          mech.door = phi
+        } else if (m.kind === 'rack') {
+          const v = clamp(b.out0 + (b.a0 - local.x), 0, KITCHEN.racks[m.rack].travel)
+          if (m.rack === 'lower') mech.lowerRack = v
+          else mech.upperRack = v
+        } else if (m.kind === 'lid') {
+          mech.lid = lidAngleFor(local.x, local.y)
+        } else {
+          mech.folds[m.fold] = foldAngleFor(m.fold, local)
+        }
+      }
+    }
 
     const resize = () => {
       w.renderer.setSize(host.clientWidth, host.clientHeight, false)
@@ -791,14 +1101,14 @@ export default function Humanoid() {
       if (!down) return
       const moved = Math.hypot(e.clientX - down.x, e.clientY - down.y)
       down = null
-      if (moved > 5 || w.gizmo.dragging || w.gizmo.axis) return
+      if (moved > 5 || w.gizmo.dragging || w.gizmo.axis || sim.task) return
       const rect = el.getBoundingClientRect()
       const ndc = new THREE.Vector2(((e.clientX - rect.left) / rect.width) * 2 - 1, -((e.clientY - rect.top) / rect.height) * 2 + 1)
       const ray = new THREE.Raycaster()
       ray.setFromCamera(ndc, w.camera)
       const st = settingsRef.current
       if (st.armMode === 'ik') {
-        const hit = ray.intersectObjects(w.pickables, false)[0]
+        const hit = ray.intersectObjects(w.pickables, true)[0]
         if (!hit) return
         const local = w.robot.worldToLocal(hit.point.clone().add(new THREE.Vector3(0, 0.05, 0)))
         const side: Side = st.armSel === 'L' ? 'L' : 'R'
@@ -841,7 +1151,7 @@ export default function Humanoid() {
     const baseM = new THREE.Matrix4()
 
     const loop = () => {
-      const dt = Math.min(0.25, clock.getDelta())
+      const dt = Math.min(0.5, Math.min(0.25, clock.getDelta()) * (sim.task ? settingsRef.current.speed : 1))
       const steps = Math.max(1, Math.ceil(dt / 0.01))
       const h = dt / steps
       const t = clock.elapsedTime
@@ -849,13 +1159,14 @@ export default function Humanoid() {
       const k = keys.current
 
       // ---- Arm targets: joint sliders, or inverse kinematics ---------------
-      for (const side of SIDES) if (st.armMode === 'joint' || !activeSides(st.armSel).includes(side)) sim.qT[side] = [...st.arms[side]]
-      if (st.armMode === 'ik') {
+      if (!sim.task) for (const side of SIDES) if (st.armMode === 'joint' || !activeSides(st.armSel).includes(side)) sim.qT[side] = [...st.arms[side]]
+      if (st.armMode === 'ik' && !sim.task) {
         const tg = effTargets(st)
-        const key = JSON.stringify([tg, st.dirGoal, st.armSel, st.lift])
+        sim.waistT = waistFor(activeSides(st.armSel).map((side) => ({ side, p: new THREE.Vector3(...tg[side]) })))
+        const key = JSON.stringify([tg, st.dirGoal, st.armSel, st.lift, sim.waistT])
         if (key !== sim.ikKey) {
           sim.ikKey = key
-          baseM.makeTranslation(0, st.lift, 0)
+          baseM.copy(torsoBase(st.lift, sim.waistT))
           const dir = st.dirGoal === 'free' ? null : DIR_VECTORS[st.dirGoal]
           for (const side of activeSides(st.armSel)) {
             const res = solveIK(side, sim.qT[side], baseM, new THREE.Vector3(...tg[side]), { dir, rest: REST })
@@ -864,11 +1175,12 @@ export default function Humanoid() {
           }
         }
       } else sim.ikKey = ''
+      if (!sim.task && st.armMode !== 'ik') sim.waistT = st.waist
       if (waveRef.current) {
         waveRef.current = false
-        sim.waveUntil = t + 5
+        if (!sim.task) sim.waveUntil = t + 5
       }
-      const waving = t < sim.waveUntil
+      const waving = t < sim.waveUntil && !sim.task
       const waveQ = [...WAVE]
       waveQ[3] = WAVE[3] + 0.4 * Math.sin((t - sim.waveUntil) * 4)
 
@@ -876,12 +1188,38 @@ export default function Humanoid() {
       let vT = 0
       let vPrev = sim.v
       for (let step = 0; step < steps; step++) {
-        const throttle = (k.has('fwd') ? 1 : 0) - (k.has('back') ? 1 : 0)
-        const steer = (k.has('left') ? 1 : 0) - (k.has('right') ? 1 : 0)
+        const throttle = sim.task ? 0 : (k.has('fwd') ? 1 : 0) - (k.has('back') ? 1 : 0)
+        const steer = sim.task ? 0 : (k.has('left') ? 1 : 0) - (k.has('right') ? 1 : 0)
         let wT = 0
-        state = 'Idle'
+        state = sim.task ? 'Working' : 'Idle'
         vT = 0
-        if (throttle || steer) {
+        if (sim.path.length) {
+          const seg = sim.path[0]
+          state = 'Driving'
+          if (seg.kind === 'turn') {
+            const err = wrap(seg.yaw - sim.yaw)
+            wT = clamp(3 * err, -MAX_TURN * 0.8, MAX_TURN * 0.8)
+            if (Math.abs(err) < 0.004 && Math.abs(sim.wz) < 0.06) {
+              sim.yaw = seg.yaw
+              sim.wz = 0
+              wT = 0
+              sim.path.shift()
+            }
+          } else {
+            const dx = seg.x - sim.x
+            const dz = seg.z - sim.z
+            const along = dx * Math.cos(sim.yaw) - dz * Math.sin(sim.yaw)
+            const dist = Math.hypot(dx, dz)
+            const cap = Math.min(seg.vmax, st.maxSpeed)
+            vT = clamp(along * 1.6, -cap, cap)
+            if (along > 0.1) wT = clamp(2.5 * wrap(Math.atan2(-dz, dx) - sim.yaw), -1, 1)
+            if ((dist < 0.006 || Math.abs(along) < 0.004) && Math.abs(sim.v) < 0.03) {
+              sim.v = 0
+              vT = 0
+              sim.path.shift()
+            }
+          }
+        } else if (throttle || steer) {
           sim.goal = null
           sim.lastInput = t
           vT = throttle * st.maxSpeed
@@ -905,10 +1243,12 @@ export default function Humanoid() {
         vPrev = sim.v
         sim.v = approach(sim.v, vT, ACCEL * h)
         sim.wz = approach(sim.wz, wT, TURN_ACCEL * h)
-        sim.yaw = wrap(sim.yaw + sim.wz * h)
+        const ny = wrap(sim.yaw + sim.wz * h)
+        if (blockedAt(sim.x, sim.z, ny) && !blockedAt(sim.x, sim.z, sim.yaw)) sim.wz = 0
+        else sim.yaw = ny
         const nx = sim.x + sim.v * Math.cos(sim.yaw) * h
         const nz = sim.z - sim.v * Math.sin(sim.yaw) * h
-        if (blockedAt(nx, nz) && !blockedAt(sim.x, sim.z)) {
+        if (blockedAt(nx, nz, sim.yaw) && !blockedAt(sim.x, sim.z, sim.yaw)) {
           sim.v = 0
           sim.blockedFor += h
         } else {
@@ -922,17 +1262,22 @@ export default function Humanoid() {
           sim.goal = null
           sim.blockedFor = 0
         }
+        if (sim.task && sim.path.length && sim.blockedFor > 2.5) {
+          sim.blockedFor = 0
+          endTask("Stopped: the robot's path is blocked")
+        }
         if (state === 'Idle' && t - sim.arrivedAt < 1.5) state = 'Arrived'
         for (const wh of w.wheels) wh.phi += (sim.v * h + wh.s * sim.wz * h * WHEEL_Z) / WHEEL_R
 
         // Motors: every joint follows its target with a trapezoidal velocity profile.
-        ;[sim.lift, sim.liftV] = servoStep(sim.lift, sim.liftV, st.lift, LIFT_V, LIFT_A, h)
+        ;[sim.lift, sim.liftV] = servoStep(sim.lift, sim.liftV, sim.liftT ?? st.lift, LIFT_V, LIFT_A, h)
+        ;[sim.waist, sim.waistV] = servoStep(sim.waist, sim.waistV, sim.waistT, WAIST.vmax, WAIST.amax, h)
         for (const side of SIDES) {
           const target = side === 'R' && waving ? waveQ : sim.qT[side]
           for (let i = 0; i < DOF; i++) {
-            ;[sim.q[side][i], sim.qv[side][i]] = servoStep(sim.q[side][i], sim.qv[side][i], target[i], ARM[i].vmax, ARM[i].amax, h)
+            ;[sim.q[side][i], sim.qv[side][i]] = servoStep(sim.q[side][i], sim.qv[side][i], target[i], ARM[i].vmax * sim.slow[side], ARM[i].amax, h)
           }
-          sim.grip[side] = approach(sim.grip[side], side === 'R' && waving ? 1 : st.grip[side], 1.5 * h)
+          sim.grip[side] = approach(sim.grip[side], sim.task ? sim.gripT[side] : side === 'R' && waving ? 1 : st.grip[side], 1.5 * h)
         }
       }
 
@@ -941,19 +1286,38 @@ export default function Humanoid() {
       w.robot.rotation.y = sim.yaw
       w.wheels.forEach((wh) => (wh.spin.rotation.z = -wh.phi))
       w.carriage.position.y = sim.lift
+      w.waist.rotation.y = sim.waist
       for (const side of SIDES) poseArm(w.arms[side], sim.q[side], sim.grip[side])
+      w.robot.updateMatrixWorld(true)
+      sim.time += dt
+      updateBindings(S.mech)
+      for (const an of sim.anims) {
+        an.t = Math.min(1, an.t + dt / an.dur)
+        const e = an.to > an.from ? an.t * an.t : 1 - (1 - an.t) * (1 - an.t) // falls open like gravity
+        S.mech[an.key] = an.from + (an.to - an.from) * e
+      }
+      sim.anims = sim.anims.filter((an) => an.t < 1)
+      S.apply(sim.time, dt)
+      runTask()
 
       // Head
       let panT = st.pan
       let tiltT = st.tilt
       if (st.autoHead) {
         const ikSide: Side = st.armSel === 'L' ? 'L' : 'R'
-        if (st.armMode === 'ik') {
-          const tg = effTargets(st)[ikSide]
-          panT = clamp(Math.atan2(-tg[2], tg[0] - COLUMN.x), -1.3, 1.3)
-          tiltT = clamp(Math.atan2(tg[1] - (COLUMN.top + 0.1), Math.hypot(tg[0] - COLUMN.x, tg[2])), -0.7, 0.5)
+        if (sim.task && sim.look && !sim.path.length) {
+          const l = torsoFrame(robotFrame(sim.look))
+          panT = clamp(Math.atan2(-l.z, l.x - COLUMN.x), -1.3, 1.3)
+          tiltT = clamp(Math.atan2(l.y - (COLUMN.top + 0.1), Math.hypot(l.x - COLUMN.x, l.z)), -0.8, 0.5)
+        } else if (sim.task) {
+          panT = clamp(sim.wz * 0.5, -0.9, 0.9)
+          tiltT = -0.15
+        } else if (st.armMode === 'ik') {
+          const l = torsoFrame(new THREE.Vector3(...effTargets(st)[ikSide]))
+          panT = clamp(Math.atan2(-l.z, l.x - COLUMN.x), -1.3, 1.3)
+          tiltT = clamp(Math.atan2(l.y - (COLUMN.top + 0.1), Math.hypot(l.x - COLUMN.x, l.z)), -0.7, 0.5)
         } else if (sim.goal) {
-          panT = clamp(wrap(Math.atan2(-(sim.goal.z - sim.z), sim.goal.x - sim.x) - sim.yaw), -1.3, 1.3)
+          panT = clamp(wrap(Math.atan2(-(sim.goal.z - sim.z), sim.goal.x - sim.x) - sim.yaw - sim.waist), -1.3, 1.3)
           tiltT = -0.25
         } else if (t - sim.lastInput > 3) {
           panT = 0.9 * Math.sin(t * 0.45) * Math.sin(t * 0.17)
@@ -973,7 +1337,7 @@ export default function Humanoid() {
       w.brakeMats.forEach((m) => (m.emissiveIntensity = braking ? 2.2 : 0.5))
 
       // IK targets, gizmo and "can't reach" lines
-      const ikOn = st.armMode === 'ik'
+      const ikOn = st.armMode === 'ik' && !sim.task
       const tg = effTargets(st)
       for (const side of SIDES) {
         const on = ikOn && activeSides(st.armSel).includes(side)
@@ -985,7 +1349,7 @@ export default function Humanoid() {
         const line = w.reachLines[side]
         line.visible = on && !!res && !res.reached
         if (line.visible) {
-          baseM.makeTranslation(0, st.lift, 0)
+          baseM.copy(torsoBase(st.lift, sim.waistT))
           const tip = fk(side, res!.q, baseM).tcp
           ;(line.geometry as THREE.BufferGeometry).setFromPoints([tip, new THREE.Vector3(...tg[side])])
           line.computeLineDistances()
@@ -1026,7 +1390,8 @@ export default function Humanoid() {
       teleT += dt
       if (teleT > 0.1) {
         teleT = 0
-        baseM.makeTranslation(0, sim.lift, 0)
+        baseM.copy(torsoBase(sim.lift, sim.waist))
+        w.waistLed.emissive.set(Math.abs(sim.waistV) > 0.05 ? '#38bdf8' : '#22c55e')
         const arms = {} as Record<Side, ArmTele>
         for (const side of SIDES) {
           const tau = gravityTorques(side, sim.q[side], baseM, st.payload)
@@ -1045,7 +1410,21 @@ export default function Humanoid() {
             dir: [f.dir.x, f.dir.y, f.dir.z],
           }
         }
-        setTele({ x: sim.x, z: sim.z, heading: deg(sim.yaw), speed: sim.v, odo: sim.odo, state, lift: sim.lift, arms, ik: { ...sim.ik } })
+        const T = sim.task
+        setTele({
+          x: sim.x,
+          z: sim.z,
+          heading: deg(sim.yaw),
+          speed: sim.v,
+          odo: sim.odo,
+          state,
+          lift: sim.lift,
+          waist: sim.waist,
+          arms,
+          ik: { ...sim.ik },
+          task: T ? { id: T.id, label: T.label, step: Math.min(T.i + 1, T.acts.length), total: T.acts.length, text: T.text } : null,
+          log: sim.log,
+        })
       }
       raf = requestAnimationFrame(loop)
     }
@@ -1085,6 +1464,8 @@ export default function Humanoid() {
   })
   const padBtn = 'grid h-11 place-items-center rounded-lg bg-slate-800 text-slate-200 ring-1 ring-slate-700 hover:bg-slate-700 active:bg-cyan-500 active:text-slate-950 select-none touch-none'
   const stateTone = tele.state === 'Blocked' ? 'bad' : tele.state === 'Arrived' ? 'good' : undefined
+  const busy = tele.task ? 'pointer-events-none opacity-50' : undefined
+  const TASK_ICONS: Record<TaskId, typeof Boxes> = { sort: Boxes, dishes: UtensilsCrossed, fold: Shirt, wash: WashingMachine }
   const ikMode = settings.armMode === 'ik'
   const ikSide: Side = settings.armSel === 'L' ? 'L' : 'R'
   const ik = tele.ik[ikSide]
@@ -1101,7 +1482,9 @@ export default function Humanoid() {
             <div className="relative aspect-[16/10] w-full">
               <div ref={hostRef} className="absolute inset-0 cursor-crosshair" />
               <div className="pointer-events-none absolute left-3 top-3 rounded-md bg-slate-900/80 px-2.5 py-1.5 text-xs text-slate-300 ring-1 ring-slate-700">
-                {ikMode
+                {tele.task
+                  ? `${tele.task.label}: ${tele.task.text}`
+                  : ikMode
                   ? 'Drag the arrows to move the hand target · click a crate, barrel or the floor to reach for it'
                   : 'WASD or arrow keys to drive · click the floor to send it there · space to stop'}
               </div>
@@ -1195,13 +1578,74 @@ export default function Humanoid() {
             <Stat label="Position x" value={`${fmt(tele.x, 2)} m`} />
             <Stat label="Position z" value={`${fmt(tele.z, 2)} m`} />
             <Stat label="Shoulder height" value={`${Math.round(tele.lift * 100)} cm`} />
+            <Stat label="Waist" value={`${Math.round(deg(tele.waist))}°`} />
             <Stat label="Arm reach" value={`${Math.round((UPPER + FORE + 0.14) * 100)} cm`} />
           </div>
         </Card>
       </div>
 
       <aside className="space-y-4">
-        <Card title="Arms">
+        <Card
+          title="Tasks"
+          right={tele.task ? <span className="text-[11px] font-medium text-cyan-300">Running</span> : <span className="text-[11px] text-slate-500">4 stations</span>}
+        >
+          <div className="grid grid-cols-2 gap-2">
+            {TASKS.map((task) => {
+              const Icon = TASK_ICONS[task.id]
+              return (
+                <Button key={task.id} onClick={() => taskRef.current.start(task.id)} disabled={!!tele.task} title={task.blurb}>
+                  <Icon className="h-4 w-4" /> {task.label}
+                </Button>
+              )
+            })}
+          </div>
+          {tele.task && (
+            <div className="mt-4 space-y-2">
+              <div className="flex items-center justify-between gap-2 text-sm">
+                <span className="font-medium text-slate-100">{tele.task.label}</span>
+                <span className="font-mono text-xs text-slate-400">
+                  step {tele.task.step} / {tele.task.total}
+                </span>
+              </div>
+              <div className="h-1.5 rounded-full bg-slate-800">
+                <div className="h-full rounded-full bg-cyan-400 transition-[width]" style={{ width: `${(tele.task.step / tele.task.total) * 100}%` }} />
+              </div>
+              <p className="text-xs text-slate-300">{tele.task.text}</p>
+              <Button onClick={() => taskRef.current.stop()}>
+                <Square className="h-3.5 w-3.5" /> Stop
+              </Button>
+            </div>
+          )}
+          <div className="mt-4 flex items-end gap-2">
+            <div className="flex-1">
+              <div className="mb-1 text-xs text-slate-400">Task speed</div>
+              <Segmented
+                size="sm"
+                value={settings.speed}
+                onChange={(v) => set('speed', v)}
+                options={[1, 2, 4, 8].map((v) => ({ value: v, label: `${v}×` }))}
+              />
+            </div>
+            <Button onClick={() => taskRef.current.resetScene()} title="Put every item back and close everything">
+              <RotateCcw className="h-4 w-4" /> Reset scene
+            </Button>
+          </div>
+          {tele.log.length > 0 && (
+            <ol className="mt-4 space-y-1 border-t border-slate-800 pt-3 text-xs text-slate-400">
+              {tele.log.map((line, i) => (
+                <li key={i} className={clsx(i === tele.log.length - 1 && 'text-slate-200')}>
+                  {line}
+                </li>
+              ))}
+            </ol>
+          )}
+          <p className="mt-3 text-xs leading-relaxed text-slate-400">
+            The robot drives to each station, docks, and plans every grasp with inverse kinematics (hand position plus which way the
+            fingers point and close). Doors, racks, the lid and the shirt follow the hand that holds them.
+          </p>
+        </Card>
+
+        <Card title="Arms" className={busy}>
           <Segmented
             size="sm"
             value={settings.armMode}
@@ -1301,7 +1745,7 @@ export default function Humanoid() {
           </div>
         </Card>
 
-        <Card title="Drive">
+        <Card title="Drive" className={busy}>
           <div className="mx-auto grid w-44 grid-cols-3 gap-1.5">
             <span />
             <button type="button" className={padBtn} title="Forward (W)" {...hold('fwd')}>
@@ -1340,7 +1784,7 @@ export default function Humanoid() {
           </div>
         </Card>
 
-        <Card title="Lift">
+        <Card title="Torso" className={busy}>
           <Slider
             label="Shoulder height"
             value={Math.round(settings.lift * 100)}
@@ -1349,9 +1793,22 @@ export default function Humanoid() {
             unit=" cm"
             onChange={(v) => set('lift', v / 100)}
           />
+          <div className="mt-4">
+            <Slider
+              label={ikMode ? 'Waist (turns toward the target)' : 'Waist'}
+              value={Math.round(deg(ikMode ? tele.waist : settings.waist))}
+              min={WAIST.min}
+              max={WAIST.max}
+              unit="°"
+              color="#22d3ee"
+              disabled={ikMode}
+              onChange={(v) => set('waist', rad(v))}
+            />
+          </div>
           <p className="mt-3 text-xs leading-relaxed text-slate-400">
-            A lead screw drives the torso carriage along two rails on the column (15 cm/s top speed). The base drives on two hidden wheels
-            (differential drive) with casters front and back.
+            The column, torso, arms and head turn together on a waist turntable at the top of the base. In Reach mode and during tasks the
+            waist turns by itself so the working shoulder is a comfortable distance from the target. A lead screw drives the torso up and
+            down the column (15 cm/s).
           </p>
         </Card>
 

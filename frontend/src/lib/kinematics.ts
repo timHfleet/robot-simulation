@@ -44,13 +44,66 @@ export interface JointDef {
 export const ARM: JointDef[] = [
   { key: 'sp', label: 'Shoulder pitch', offset: [0, 0, 0.2], axis: [0, 0, 1], min: -60, max: 180, vmax: 1.8, amax: 6, rated: 90, mass: { m: 0.4, at: [0, 0, 0.04] }, color: '#e2e8f0' },
   { key: 'sr', label: 'Shoulder roll', offset: [0, 0, 0.065], axis: [-1, 0, 0], min: -15, max: 100, vmax: 1.8, amax: 6, rated: 90, mass: { m: 0.5, at: [0, -0.04, 0] }, color: '#38bdf8' },
-  { key: 'sy', label: 'Upper-arm twist', offset: [0, -0.075, 0], axis: [0, 1, 0], min: -100, max: 100, vmax: 2.2, amax: 8, rated: 45, mass: { m: 1.6, at: [0, -0.11, 0] }, color: '#a78bfa' },
-  { key: 'el', label: 'Elbow', offset: [0, -(UPPER - 0.075), 0], axis: [0, 0, 1], min: 0, max: 145, vmax: 2.2, amax: 8, rated: 60, mass: { m: 0.5, at: [0, -0.03, 0] }, color: '#34d399' },
-  { key: 'fy', label: 'Forearm twist', offset: [0, -0.07, 0], axis: [0, 1, 0], min: -120, max: 120, vmax: 3, amax: 10, rated: 18, mass: { m: 1.0, at: [0, -0.1, 0] }, color: '#f472b6' },
-  { key: 'wp', label: 'Wrist pitch', offset: [0, -(FORE - 0.07), 0], axis: [0, 0, 1], min: -80, max: 80, vmax: 3.5, amax: 12, rated: 12, mass: { m: 0.15, at: [0, -0.015, 0] }, color: '#facc15' },
-  { key: 'wy', label: 'Wrist yaw', offset: [0, -0.035, 0], axis: [-1, 0, 0], min: -45, max: 45, vmax: 3.5, amax: 12, rated: 12, mass: { m: 0.6, at: [0, -0.07, 0] }, color: '#fb7185' },
+  { key: 'sy', label: 'Upper-arm twist', offset: [0, -0.075, 0], axis: [0, 1, 0], min: -120, max: 120, vmax: 2.2, amax: 8, rated: 45, mass: { m: 1.6, at: [0, -0.11, 0] }, color: '#a78bfa' },
+  { key: 'el', label: 'Elbow', offset: [0, -(UPPER - 0.075), 0], axis: [0, 0, 1], min: 0, max: 150, vmax: 2.2, amax: 8, rated: 60, mass: { m: 0.5, at: [0, -0.03, 0] }, color: '#34d399' },
+  { key: 'fy', label: 'Forearm twist', offset: [0, -0.07, 0], axis: [0, 1, 0], min: -170, max: 170, vmax: 3, amax: 10, rated: 18, mass: { m: 1.0, at: [0, -0.1, 0] }, color: '#f472b6' },
+  { key: 'wp', label: 'Wrist pitch', offset: [0, -(FORE - 0.07), 0], axis: [0, 0, 1], min: -125, max: 125, vmax: 3.5, amax: 12, rated: 12, mass: { m: 0.15, at: [0, -0.015, 0] }, color: '#facc15' },
+  { key: 'wy', label: 'Wrist yaw', offset: [0, -0.035, 0], axis: [-1, 0, 0], min: -90, max: 90, vmax: 3.5, amax: 12, rated: 12, mass: { m: 0.6, at: [0, -0.07, 0] }, color: '#fb7185' },
 ]
 export const DOF = ARM.length
+
+// ---------------------------------------------------------------------------
+// Waist: the column, torso, arms and head turn together about a vertical axis
+// through the column, on a turntable at the top of the base.
+// ---------------------------------------------------------------------------
+/** The waist axis sits at x = WAIST_X in the robot frame (through the column). */
+export const WAIST_X = -0.07
+export const WAIST = { min: -100, max: 100, vmax: 1.2, amax: 3.5, label: 'Waist' }
+const Y_AXIS = new THREE.Vector3(0, 1, 0)
+
+/** Shoulder carriage frame in robot coordinates for a given lift height and waist angle. */
+export function torsoBase(lift: number, waist: number) {
+  return new THREE.Matrix4()
+    .makeTranslation(WAIST_X, 0, 0)
+    .multiply(new THREE.Matrix4().makeRotationAxis(Y_AXIS, waist))
+    .multiply(new THREE.Matrix4().makeTranslation(-WAIST_X, lift, 0))
+}
+
+/**
+ * Turn the torso so the working shoulder(s) end up a comfortable distance from
+ * where the hands need to go (robot-frame targets), with a mild preference for
+ * facing straight ahead. Reaching far to the left with the left hand brings the left shoulder
+ * forward; two hands working in front keep the torso square.
+ */
+export function waistFor(targets: { side: Side; p: THREE.Vector3 }[], range = 50) {
+  if (!targets.length) return 0
+  const cost = (w: number) => {
+    const c = Math.cos(w)
+    const s = Math.sin(w)
+    let sum = 0.03 * w * w
+    for (const { side, p } of targets) {
+      // Shoulder (roll joint) position after turning the waist by w.
+      const sx = 0
+      const sz = side === 'R' ? 0.265 : -0.265
+      const x = WAIST_X + (sx - WAIST_X) * c + sz * s
+      const z = -(sx - WAIST_X) * s + sz * c
+      // Aim for a comfortable working distance: too close is as awkward as too far.
+      sum += (Math.hypot(p.x - x, p.z - z) - 0.42) ** 2
+    }
+    return sum
+  }
+  let best = 0
+  let bestCost = cost(0)
+  for (let d = -range; d <= range; d += 2) {
+    const w = rad(d)
+    const v = cost(w)
+    if (v < bestCost - 1e-9) {
+      best = w
+      bestCost = v
+    }
+  }
+  return clamp(best, rad(WAIST.min), rad(WAIST.max))
+}
 
 const sgn = (side: Side) => (side === 'R' ? 1 : -1)
 /** Mirror a point for the left arm (flip z). */
@@ -173,10 +226,12 @@ export function solveIK(
   q0: number[],
   base: THREE.Matrix4,
   target: THREE.Vector3,
-  opts: { dir?: THREE.Vector3 | null; rest: number[]; maxIters?: number },
+  opts: { dir?: THREE.Vector3 | null; close?: THREE.Vector3 | null; rest: number[]; maxIters?: number },
 ): IKResult {
   const t0 = performance.now()
   const dirT = opts.dir ?? null
+  // With both a pointing direction and a finger-closing axis, the whole hand orientation is fixed.
+  const closeT = dirT && opts.close ? opts.close.clone().sub(dirT.clone().multiplyScalar(opts.close.dot(dirT))).normalize() : null
   const ok = (r: Attempt) => r.posErr < 0.005 && (!dirT || r.dirErr < rad(3))
   const score = (r: Attempt) => r.posErr + 0.05 * r.dirErr
   // DLS is a local method and can get stuck against a joint limit, so if the
@@ -189,7 +244,7 @@ export function solveIK(
   const run = (goal: THREE.Vector3) => {
     let best: Attempt | null = null
     for (const seed of seeds) {
-      const r = dlsAttempt(side, seed, base, goal, dirT, opts.rest, opts.maxIters ?? 150)
+      const r = dlsAttempt(side, seed, base, goal, dirT, closeT, opts.rest, opts.maxIters ?? 150)
       iters += r.iters
       if (!best || score(r) < score(best)) best = r
       if (ok(best)) break
@@ -226,6 +281,7 @@ function dlsAttempt(
   base: THREE.Matrix4,
   target: THREE.Vector3,
   dirT: THREE.Vector3 | null,
+  closeT: THREE.Vector3 | null,
   rest: number[],
   maxIters: number,
 ): Attempt {
@@ -250,7 +306,22 @@ function dlsAttempt(
       J[1].push(col.y)
       J[2].push(col.z)
     }
-    if (dirT) {
+    if (dirT && closeT) {
+      // Full orientation: desired tool axes y = -approach, z = closing axis, x = y × z.
+      const yd = dirT.clone().negate()
+      const xd = new THREE.Vector3().crossVectors(yd, closeT)
+      const xc = new THREE.Vector3(1, 0, 0).transformDirection(f.tool)
+      const yc = new THREE.Vector3(0, 1, 0).transformDirection(f.tool)
+      const zc = new THREE.Vector3(0, 0, 1).transformDirection(f.tool)
+      dirErr = Math.acos(clamp((xc.dot(xd) + yc.dot(yd) + zc.dot(closeT) - 1) / 2, -1, 1))
+      const eo = new THREE.Vector3()
+        .crossVectors(xc, xd)
+        .add(new THREE.Vector3().crossVectors(yc, yd))
+        .add(new THREE.Vector3().crossVectors(zc, closeT))
+        .multiplyScalar(0.5 * wDir)
+      e.push(eo.x, eo.y, eo.z)
+      J.push(f.axes.map((a) => a.x * wDir), f.axes.map((a) => a.y * wDir), f.axes.map((a) => a.z * wDir))
+    } else if (dirT) {
       const d = f.dir
       dirErr = d.angleTo(dirT)
       const eo = new THREE.Vector3().crossVectors(d, dirT).multiplyScalar(wDir)
@@ -293,6 +364,14 @@ function dlsAttempt(
   const f = fk(side, q, base)
   posErr = f.tcp.distanceTo(target)
   dirErr = dirT ? f.dir.angleTo(dirT) : 0
+  if (dirT && closeT) {
+    const yd = dirT.clone().negate()
+    const xd = new THREE.Vector3().crossVectors(yd, closeT)
+    const xc = new THREE.Vector3(1, 0, 0).transformDirection(f.tool)
+    const yc = new THREE.Vector3(0, 1, 0).transformDirection(f.tool)
+    const zc = new THREE.Vector3(0, 0, 1).transformDirection(f.tool)
+    dirErr = Math.acos(clamp((xc.dot(xd) + yc.dot(yd) + zc.dot(closeT) - 1) / 2, -1, 1))
+  }
   return { q, posErr, dirErr, iters: it }
 }
 
