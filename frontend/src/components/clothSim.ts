@@ -22,6 +22,12 @@ const MAX_STEPS = 16
 const ITERS = 10
 const GRAVITY = -9.81
 const DAMPING = 0.012
+/** Settling once nothing touches the cloth: after this long (s), damping rises at this rate per second up to this much per step. */
+const SETTLE_AFTER = 0.4
+const SETTLE_RATE = 0.6
+const SETTLE_MAX = 0.35
+/** Put the cloth to sleep this long (s) after it was last touched. */
+const SLEEP_AFTER = 3
 /** Particles stay this far apart (cloth thickness, both sides). */
 const MIN_DIST = 0.0085
 /** Cloth rests this far above the table. */
@@ -29,7 +35,8 @@ const REST_UP = 0.0045
 /** Below this much sliding per step, cloth on the table sticks. */
 const STICK = 0.003
 /** How strongly touching layers of cloth are made to move together (0 to 1). */
-const LAYER_GRIP = 0.8
+/** Tunable at run time in development (window.__cloth.tune). */
+const TUNE = { layerGrip: 0.8, selfCollide: true }
 const PINCH_R = 0.045
 /** How far from the fingertips the hand can still catch an edge of cloth. */
 const REACH = 0.09
@@ -93,6 +100,8 @@ export interface Cloth {
   grabFeature(side: 'L' | 'R', name: Feature, tcp: THREE.Vector3, stack?: boolean): number
   /** Is the cloth at rest (nothing held, nothing moving)? */
   sleeping(): boolean
+  /** Debugging: live tuning switches. */
+  tune: { layerGrip: number; selfCollide: boolean }
   /** Debugging: positions of the simulated particles (station-local x, y, z triples). */
   particles(): number[]
   /** Debugging: the nearest cloth particle to a station-local point. */
@@ -192,6 +201,8 @@ export function createCloth(parts: ClothParts): Cloth {
   const pins: Record<'L' | 'R', { k: number; off: [number, number, number] }[]> = { L: [], R: [] }
   let acc = 0
   let still = 0
+  /** Seconds since anything last held or smoothed the cloth. */
+  let idle = 0
   const lastHands: Partial<Record<'L' | 'R', THREE.Vector3>> = {}
   const sweeping = { L: false, R: false }
   const lastSweep: Partial<Record<'L' | 'R', THREE.Vector3>> = {}
@@ -343,12 +354,27 @@ export function createCloth(parts: ClothParts): Cloth {
               // Friction needs pressure: only a layer resting on another (contact mostly
               // vertical) grips; layers hanging side by side in the air slide apart freely.
               const press = Math.max(0, (Math.abs(ey) / d - 0.6) / 0.4)
-              if (press > 0) for (let e = 0; e < 3; e++) {
-                const dk = pos[k * 3 + e] - prev[k * 3 + e]
-                const dm = pos[m * 3 + e] - prev[m * 3 + e]
-                const dv = (dm - dk) * LAYER_GRIP * press
-                pos[k * 3 + e] += dv * (inv[k] / w)
-                pos[m * 3 + e] -= dv * (inv[m] / w)
+              if (press > 0) {
+                // Relative displacement this step, minus its part along the contact normal:
+                // friction resists sliding only. (Damping the normal part as well would undo the
+                // collision push every step, and the layers would jitter forever.)
+                const nx = ex / d
+                const ny = ey / d
+                const nz = ez / d
+                let rx = pos[m * 3] - prev[m * 3] - (pos[k * 3] - prev[k * 3])
+                let ry = pos[m * 3 + 1] - prev[m * 3 + 1] - (pos[k * 3 + 1] - prev[k * 3 + 1])
+                let rz = pos[m * 3 + 2] - prev[m * 3 + 2] - (pos[k * 3 + 2] - prev[k * 3 + 2])
+                const rn = rx * nx + ry * ny + rz * nz
+                rx -= rn * nx
+                ry -= rn * ny
+                rz -= rn * nz
+                const f = TUNE.layerGrip * press
+                pos[k * 3] += rx * f * (inv[k] / w)
+                pos[k * 3 + 1] += ry * f * (inv[k] / w)
+                pos[k * 3 + 2] += rz * f * (inv[k] / w)
+                pos[m * 3] -= rx * f * (inv[m] / w)
+                pos[m * 3 + 1] -= ry * f * (inv[m] / w)
+                pos[m * 3 + 2] -= rz * f * (inv[m] / w)
               }
             }
           }
@@ -358,7 +384,11 @@ export function createCloth(parts: ClothParts): Cloth {
   let hPrev = STEP
   const substep = (hands: Partial<Record<'L' | 'R', THREE.Vector3>>, t: number, h: number) => {
     const g = GRAVITY * h * h
-    const vs = (1 - DAMPING) * (h / hPrev)
+    // Cloth that nothing is touching settles: damping ramps up after a moment, as friction
+    // with the table and between layers would. (Without this, the small position corrections
+    // between stacked layers keep a folded shirt simmering forever.)
+    const damp = idle > SETTLE_AFTER ? Math.min(SETTLE_MAX, DAMPING + (idle - SETTLE_AFTER) * SETTLE_RATE) : DAMPING
+    const vs = (1 - damp) * (h / hPrev)
     hPrev = h
     stick = STICK * (h / STEP)
     let moved = 0
@@ -414,7 +444,7 @@ export function createCloth(parts: ClothParts): Cloth {
       }
       for (let k = 0; k < N; k++) if (active[k]) collideTable(k)
     }
-    selfCollide()
+    if (TUNE.selfCollide) selfCollide()
     for (let k = 0; k < N; k++) if (active[k]) collideTable(k)
     // Smoothing hands: everything under the fingertips moves with the hand.
     for (const side of ['L', 'R'] as const) {
@@ -484,11 +514,13 @@ export function createCloth(parts: ClothParts): Cloth {
       const h = acc / n
       acc = 0
       let moved = 0
+      idle = held ? 0 : idle + n * h
       for (let k = 1; k <= n; k++) moved = Math.max(moved, substep(hands, k / n, h))
       for (const side of ['L', 'R'] as const) if (hands[side]) lastHands[side] = hands[side]!.clone()
       // Sleep once everything has stopped, so a folded shirt costs nothing.
       still = !held && moved < 2e-5 ? still + 1 : 0
-      if (still > 30) asleep = true
+      // Asleep once it has stopped, or in any case a few seconds after it was let go.
+      if (still > 30 || idle > SLEEP_AFTER) asleep = true
       writeMesh()
     },
     pinch: (side, tcp) => {
@@ -597,6 +629,7 @@ export function createCloth(parts: ClothParts): Cloth {
         console.debug(`[cloth] ${side} grabs ${name}: ${pins[side].length} particles, ${(Math.hypot(pos[k0 * 3] - tcp.x, pos[k0 * 3 + 1] - tcp.y, pos[k0 * 3 + 2] - tcp.z) * 1000).toFixed(0)} mm from the fingertips`)
       return pins[side].length
     },
+    tune: TUNE,
     particles: () => {
       const out: number[] = []
       for (let k = 0; k < N; k++) if (active[k]) out.push(pos[k * 3], pos[k * 3 + 1], pos[k * 3 + 2])
