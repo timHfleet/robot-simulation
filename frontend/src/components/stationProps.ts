@@ -364,12 +364,26 @@ function buildLaundry(g: THREE.Group, pick: THREE.Object3D[]): LaundryParts {
   }
   geo.setIndex(index)
   geo.computeVertexNormals()
-  // Terry hand towel: matte, with a fine loop texture.
+  // Wicker basket for the towels, on the left of the table.
+  {
+    const B = LAUNDRY.basket
+    const top = t.h + B.h
+    const w = B.wall
+    g.add(
+      slab(B.a0, B.a1, t.h, t.h + 0.01, B.b0, B.b1, M.wicker, 0.004),
+      slab(B.a0, B.a0 + w, t.h, top, B.b0, B.b1, M.wicker, 0.004),
+      slab(B.a1 - w, B.a1, t.h, top, B.b0, B.b1, M.wicker, 0.004),
+      slab(B.a0, B.a1, t.h, top, B.b0, B.b0 + w, M.wicker, 0.004),
+      slab(B.a0, B.a1, t.h, top, B.b1 - w, B.b1, M.wicker, 0.004),
+    )
+  }
+  // Terry hand towel: matte, with a fine loop texture (tinted per towel by the material colour).
   const tx = towelTextures()
   const cloth = new THREE.Mesh(
     geo,
     new THREE.MeshPhysicalMaterial({
       map: tx.map,
+      color: '#3f8fb0',
       bumpMap: tx.bump,
       bumpScale: 1.6,
       roughness: 0.97,

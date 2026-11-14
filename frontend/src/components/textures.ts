@@ -167,7 +167,7 @@ const NECK_DIP = 0.243
  * Terry hand towel: soft colour with a woven band near each short end, a fine loop
  * texture (bump) and hemmed edges. u runs end to end (along b), v near edge to far edge.
  */
-export function towelTextures(color = '#3f7f9a', band = '#e9eef0') {
+export function towelTextures(color = '#d6d6d6', band = '#ffffff') {
   const { length, half } = LAUNDRY.towel
   const PPM = 1000
   const W = Math.round(2 * half * PPM)

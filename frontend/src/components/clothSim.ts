@@ -108,6 +108,18 @@ export interface Cloth {
   grabFeature(side: 'L' | 'R', name: Feature, tcp: THREE.Vector3, stack?: boolean, radius?: number): number
   /** Is the cloth at rest (nothing held, nothing moving)? */
   sleeping(): boolean
+  /** Raise the floor of the basket (towels lying under this one) and the drop height of new heaps. */
+  setBasketLift(dy: number): void
+  /** Move the whole cloth up by dy (station-local metres). */
+  lift(dy: number): void
+  /** Station-local position of the highest point of the cloth. */
+  top(): THREE.Vector3
+  /** Station-local centre of the cloth (average of its points). */
+  centroid(): THREE.Vector3
+  /** Hold the whole cloth in the hand (it moves rigidly with it), e.g. to carry a folded towel. */
+  grabAll(side: 'L' | 'R', tcp: THREE.Vector3): number
+  /** A copy of the drawn mesh's vertex positions as they are now. */
+  snapshot(): Float32Array
   /** Debugging: live tuning switches. */
   tune: { layerGrip: number; selfCollide: boolean; maxSteps: number; bend: number; bendSquash: number }
   /** Debugging: positions of the simulated particles (station-local x, y, z triples). */
@@ -244,8 +256,10 @@ export function createCloth(parts: ClothParts): Cloth {
     const k0 = featureIdx[hold]
     const start = new THREE.Vector3(pos[k0 * 3], pos[k0 * 3 + 1], pos[k0 * 3 + 2])
     const ang = n * 2.4
-    const top = new THREE.Vector3(0.58, LAUNDRY.table.h + 0.42, 0)
-    const swing = top.clone().add(new THREE.Vector3(Math.cos(ang) * 0.06, -0.25, Math.sin(ang) * 0.1))
+    // Dropped into the basket: held up above it by one point, swayed a little, let go.
+    const top = new THREE.Vector3((BK.a0 + BK.a1) / 2, basketFloor + 0.5, (BK.b0 + BK.b1) / 2)
+    // Lowered into the basket slowly, so it piles up in it rather than being thrown in.
+    const swing = top.clone().add(new THREE.Vector3(Math.cos(ang) * 0.04, -0.44, Math.sin(ang) * 0.04))
     const hand = new THREE.Vector3()
     pins.R = neighbours(k0).map((k) => ({ k, off: [pos[k * 3] - start.x, pos[k * 3 + 1] - start.y, pos[k * 3 + 2] - start.z] as [number, number, number] }))
     for (const p of pins.R) inv[p.k] = 0
@@ -258,9 +272,12 @@ export function createCloth(parts: ClothParts): Cloth {
       }
     }
     lastHands.R = start.clone()
-    run(start, top, 70) // lift: the shirt hangs from that point
+    // Straight up first (so nothing drags against the basket wall), then across over the basket.
+    const up = new THREE.Vector3(start.x, top.y + 0.1, start.z)
+    run(start, up, 60)
+    run(up, top, 60)
     run(top, top, 50)
-    run(top, swing, 35) // swing down and drop
+    run(top, swing, 160)
     for (const p of pins.R) inv[p.k] = 1
     pins.R = []
     for (let i = 0; i < 480; i++) substep({}, 1, STEP)
@@ -295,11 +312,40 @@ export function createCloth(parts: ClothParts): Cloth {
 
   const t = LAUNDRY.table
   const floorY = t.h + REST_UP
+  const BK = LAUNDRY.basket
+  const BK_RIM = t.h + BK.h
+  let basketFloor = t.h + 0.01 + REST_UP
   const collideTable = (k: number) => {
-    const x = pos[k * 3]
-    const z = pos[k * 3 + 2]
+    let x = pos[k * 3]
+    let z = pos[k * 3 + 2]
     const onTable = x > t.a0 && x < t.a1 && z > t.b0 && z < t.b1
-    const lim = onTable ? floorY : 0.003
+    let lim = onTable ? floorY : 0.003
+    // The basket: a floor (raised by the towels under this one) and four walls up to its rim.
+    if (x > BK.a0 && x < BK.a1 && z > BK.b0 && z < BK.b1 && pos[k * 3 + 1] < BK_RIM) {
+      const ix0 = BK.a0 + BK.wall
+      const ix1 = BK.a1 - BK.wall
+      const iz0 = BK.b0 + BK.wall
+      const iz1 = BK.b1 - BK.wall
+      const inside = x > ix0 && x < ix1 && z > iz0 && z < iz1
+      if (!inside) {
+        // In a wall: back to the side it came from.
+        const px = prev[k * 3]
+        const pz = prev[k * 3 + 2]
+        if (px > ix0 && px < ix1 && pz > iz0 && pz < iz1) {
+          x = Math.min(ix1, Math.max(ix0, x))
+          z = Math.min(iz1, Math.max(iz0, z))
+        } else {
+          const d = [x - BK.a0, BK.a1 - x, z - BK.b0, BK.b1 - z]
+          const m = Math.min(...d)
+          if (m === d[0]) x = BK.a0
+          else if (m === d[1]) x = BK.a1
+          else if (m === d[2]) z = BK.b0
+          else z = BK.b1
+        }
+        pos[k * 3] = x
+        pos[k * 3 + 2] = z
+      } else lim = basketFloor
+    }
     if (pos[k * 3 + 1] < lim) {
       // Coulomb friction: the grip comes from how hard the cloth presses on the table (how far
       // gravity pushed it in this step). The cloth sticks while it's barely pushed and slides with
@@ -679,6 +725,47 @@ export function createCloth(parts: ClothParts): Cloth {
       return pins[side].length
     },
     tune: TUNE,
+    setBasketLift: (dy) => {
+      basketFloor = t.h + 0.01 + REST_UP + dy
+    },
+    lift: (dy) => {
+      for (let k = 0; k < N; k++) {
+        if (!active[k]) continue
+        pos[k * 3 + 1] += dy
+        prev[k * 3 + 1] += dy
+      }
+      writeMesh()
+    },
+    top: () => {
+      let best = -1
+      for (let k = 0; k < N; k++) if (active[k] && (best < 0 || pos[k * 3 + 1] > pos[best * 3 + 1])) best = k
+      return new THREE.Vector3(pos[best * 3], pos[best * 3 + 1], pos[best * 3 + 2])
+    },
+    centroid: () => {
+      const c = new THREE.Vector3()
+      let n = 0
+      for (let k = 0; k < N; k++) {
+        if (!active[k]) continue
+        c.x += pos[k * 3]
+        c.y += pos[k * 3 + 1]
+        c.z += pos[k * 3 + 2]
+        n++
+      }
+      return c.multiplyScalar(1 / Math.max(1, n))
+    },
+    grabAll: (side, tcp) => {
+      for (const p of pins[side]) inv[p.k] = 1
+      pins[side] = []
+      for (let k = 0; k < N; k++) {
+        if (!active[k]) continue
+        pins[side].push({ k, off: [pos[k * 3] - tcp.x, pos[k * 3 + 1] - tcp.y, pos[k * 3 + 2] - tcp.z] })
+        inv[k] = 0
+      }
+      asleep = false
+      still = 0
+      return pins[side].length
+    },
+    snapshot: () => new Float32Array(parts.verts),
     particles: () => {
       const out: number[] = []
       for (let k = 0; k < N; k++) if (active[k]) out.push(pos[k * 3], pos[k * 3 + 1], pos[k * 3 + 2])

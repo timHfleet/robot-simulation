@@ -148,6 +148,10 @@ export const LAUNDRY = {
   shirt: { hemA: 0.38, length: 0.28, half: 0.16, sleeve: 0.32, sleeveA0: 0.52, sleeveA1: 0.65, neck: 0.05 },
   /** Hand towel lying flat: near edge at nearA, `length` deep (along a), 2 x half wide (along b). */
   towel: { nearA: 0.37, length: 0.3, half: 0.23 },
+  /** Wicker basket of towels on the left of the table (station-local footprint, wall, height). */
+  basket: { a0: 0.4, a1: 0.7, b0: -0.6, b1: -0.3, wall: 0.012, h: 0.11 },
+  /** Where folded towels are stacked, on the right of the table. */
+  stack: { a: 0.52, b: 0.47 },
   /** Folds in order: left side, right side, then bottom half up. */
   folds: [
     { point: [0, 0.746, -0.08], n: [0, 0, -1], pinch: [0.55, -0.26] },
@@ -382,7 +386,11 @@ export const KEEP_OUT: Record<StationId, { a0: number; a1: number; b0: number; b
       hand: true,
     })),
   ],
-  laundry: [{ a0: LAUNDRY.table.a0, a1: LAUNDRY.table.a1, b0: LAUNDRY.table.b0, b1: LAUNDRY.table.b1, y: LAUNDRY.table.h, hand: true }],
+  laundry: [
+    { a0: LAUNDRY.table.a0, a1: LAUNDRY.table.a1, b0: LAUNDRY.table.b0, b1: LAUNDRY.table.b1, y: LAUNDRY.table.h, hand: true },
+    // The towel basket: the hand reaches in, the elbow and forearm stay above the rim.
+    { a0: 0.4, a1: 0.7, b0: -0.6, b1: -0.3, y: LAUNDRY.table.h + 0.11, hand: false },
+  ],
   washer: [
     { a0: WASHER.stand.a0, a1: WASHER.stand.a1, b0: WASHER.stand.b0, b1: WASHER.stand.b1, y: WASHER.stand.top + WASHER.basketWall + 0.008, hand: false },
     { a0: WASHER.body.a0, a1: WASHER.body.a1, b0: WASHER.body.b0, b1: WASHER.body.b1, y: WASHER.body.top, hand: false },

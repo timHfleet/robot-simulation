@@ -29,7 +29,7 @@ import {
   type V3,
 } from '../lib/kinematics'
 import { Button, Card, Segmented, Slider, Stat } from './ui'
-import { DOCKS, ITEMS, KITCHEN, STAGING, doorAngleFor, foldAngleFor, furnitureRects, lidAngleFor, toLocal, toWorld, type StationId } from '../lib/stations'
+import { DOCKS, ITEMS, KITCHEN, LAUNDRY, STAGING, doorAngleFor, foldAngleFor, furnitureRects, lidAngleFor, toLocal, toWorld, type StationId } from '../lib/stations'
 import { handPath, keepOutsFor, pathSteps, toRobotGoal, waistForMove, type HandGoal } from '../lib/motion'
 import { TASKS, planTask, type Act, type Mechanism, type PlanCtx, type TaskId } from '../lib/tasks'
 import { buildStations, type Mech, type Stations } from './stationProps'
@@ -818,6 +818,118 @@ export default function Humanoid() {
     // The towel is simulated cloth: the hands pinch it and it drapes and folds under gravity.
     const cloth = createCloth(w.stations.parts.cloth)
     const clothFrame = () => cloth.tune.maxSteps / 120
+
+    // ---- Towels: a basket of them on the table. The top one is simulated cloth; the ones under
+    // it, and the folded ones on the stack, are still meshes (copies of a cloth shape).
+    const TOWEL_COLORS = ['#3f8fb0', '#c9734a', '#7aa36a', '#d9b44a', '#9a7fc2']
+    const clothMesh = w.stations.parts.cloth.mesh
+    const laundryG = w.stations.groups.laundry
+    const T0 = LAUNDRY.table.h
+    const tw = { left: 0, basket: [] as THREE.Mesh[], stack: [] as THREE.Mesh[], stackTop: T0, layer: 0.03 }
+    const towelMesh = (verts: Float32Array, color: string) => {
+      const g = clothMesh.geometry.clone()
+      g.setAttribute('position', new THREE.BufferAttribute(verts, 3))
+      g.computeVertexNormals()
+      const m = new THREE.Mesh(g, (clothMesh.material as THREE.MeshPhysicalMaterial).clone())
+      ;(m.material as THREE.MeshPhysicalMaterial).color.set(color)
+      m.castShadow = m.receiveShadow = true
+      laundryG.add(m)
+      return m
+    }
+    const dropMesh = (m: THREE.Mesh) => {
+      laundryG.remove(m)
+      m.geometry.dispose()
+      ;(m.material as THREE.Material).dispose()
+    }
+    const setClothColor = (c: string) => (clothMesh.material as THREE.MeshPhysicalMaterial).color.set(c)
+    const fillBasket = () => {
+      for (const m of [...tw.basket, ...tw.stack]) dropMesh(m)
+      tw.basket = []
+      tw.stack = []
+      tw.stackTop = T0
+      tw.left = TOWEL_COLORS.length
+      // One heap in the bottom of the basket, copied (turned) for the towels under the top one.
+      cloth.setBasketLift(0)
+      cloth.reset()
+      const shape = cloth.snapshot()
+      let lo = Infinity
+      let hi = -Infinity
+      for (let i = 1; i < shape.length; i += 3) {
+        lo = Math.min(lo, shape[i])
+        hi = Math.max(hi, shape[i])
+      }
+      tw.layer = Math.max(0.02, (hi - lo) * 0.5)
+      // Copies are turned about the heap's own middle, so they stay inside the basket.
+      let ca = 0
+      let cb = 0
+      for (let k = 0; k < shape.length; k += 3) {
+        ca += shape[k]
+        cb += shape[k + 2]
+      }
+      ca /= shape.length / 3
+      cb /= shape.length / 3
+      for (let i = 0; i < tw.left - 1; i++) {
+        const v = new Float32Array(shape)
+        const ang = [Math.PI, 0.5, -0.5, Math.PI + 0.4][i % 4]
+        const c = Math.cos(ang)
+        const sn = Math.sin(ang)
+        for (let k = 0; k < v.length; k += 3) {
+          const x = v[k] - ca
+          const z = v[k + 2] - cb
+          v[k] = ca + x * c - z * sn
+          v[k + 2] = cb + x * sn + z * c
+          v[k + 1] += i * tw.layer
+        }
+        // Bottom of the basket first; the last towel in this list sits just under the top one.
+        tw.basket.push(towelMesh(v, TOWEL_COLORS[tw.left - 1 - i]))
+      }
+      const lift = (tw.left - 1) * tw.layer
+      cloth.lift(lift)
+      cloth.setBasketLift(lift)
+      setClothColor(TOWEL_COLORS[0])
+      clothMesh.visible = true
+    }
+    /** The folded towel the hand holds goes onto the stack; the next towel in the basket becomes the cloth. */
+    const stackTowel = () => {
+      const v = cloth.snapshot()
+      let lo = Infinity
+      let hi = -Infinity
+      let cx = 0
+      let cz = 0
+      for (let k = 0; k < v.length; k += 3) {
+        lo = Math.min(lo, v[k + 1])
+        hi = Math.max(hi, v[k + 1])
+        cx += v[k]
+        cz += v[k + 2]
+      }
+      const n = v.length / 3
+      const S = LAUNDRY.stack
+      const dx = S.a - cx / n
+      const dz = S.b - cz / n
+      const dy = tw.stackTop + 0.001 - lo
+      for (let k = 0; k < v.length; k += 3) {
+        v[k] += dx
+        v[k + 1] += dy
+        v[k + 2] += dz
+      }
+      const done = TOWEL_COLORS.length - tw.left
+      tw.stack.push(towelMesh(v, TOWEL_COLORS[done]))
+      tw.stackTop += Math.min(0.05, Math.max(0.015, (hi - lo) * 0.8))
+      tw.left--
+      if (tw.left > 0) {
+        const m = tw.basket.pop()
+        if (m) dropMesh(m)
+        const lift = (tw.left - 1) * tw.layer
+        cloth.setBasketLift(lift)
+        cloth.reset()
+        setClothColor(TOWEL_COLORS[done + 1])
+        say(`${tw.left} towel${tw.left > 1 ? 's' : ''} left in the basket`)
+      } else {
+        clothMesh.visible = false
+        say('The basket is empty')
+      }
+    }
+    fillBasket()
     w.stations.useClothPhysics()
     if (import.meta.env.DEV) Object.assign(window, { __world: w, __cloth: cloth })
     /** Items let go of, to check where they ended up once they settle. */
@@ -920,7 +1032,7 @@ export default function Humanoid() {
       },
       ids: (kind) => ITEMS.filter((d) => d.kind === kind).map((d) => d.id),
       cloth: (f) => {
-        const p = cloth.feature(f as Feature)
+        const p = f === 'top' ? cloth.top() : f === 'centre' ? cloth.centroid() : cloth.feature(f as Feature)
         return toWorld('laundry', p.x, p.y, p.z)
       },
     })
@@ -970,7 +1082,7 @@ export default function Humanoid() {
       start: (id) => {
         if (sim.task) return
         w.scene.updateMatrixWorld(true)
-        const acts = planTask(id, planCtx(), { foldsDone: S.mech.folds[2] > 3 })
+        const acts = planTask(id, planCtx(), { towelsLeft: tw.left })
         const meta = TASKS.find((x) => x.id === id)!
         if (!acts.length) {
           say(`${meta.label}: nothing left to do. Press Reset scene to set it up again.`)
@@ -988,7 +1100,7 @@ export default function Humanoid() {
         if (sim.task) endTask(null)
         S.reset()
         phys?.reset()
-        cloth.reset()
+        fillBasket()
         landing = []
         say('Scene reset')
       },
@@ -1142,7 +1254,12 @@ export default function Humanoid() {
           const tcp = toLocal('laundry', tcpWorld(a.side))
           if (import.meta.env.DEV)
             console.debug(`[clothGrab] ${a.side} ${a.feature}: hand ${tcp.toArray().map((v) => v.toFixed(3))}, point ${cloth.feature(a.feature as Feature).toArray().map((v) => v.toFixed(3))}, q ${sim.q[a.side].map((v) => Math.round(deg(v)))}`)
-          const caught = a.feature === 'nearest' ? cloth.grabAt(a.side, tcp) : cloth.grabFeature(a.side, a.feature as Feature, tcp, a.stack, a.radius)
+          const caught =
+            a.feature === 'all'
+              ? cloth.grabAll(a.side, tcp)
+              : a.feature === 'nearest'
+                ? cloth.grabAt(a.side, tcp)
+                : cloth.grabFeature(a.side, a.feature as Feature, tcp, a.stack, a.radius)
           if (!caught) say(`Missed the towel: the ${a.side === 'L' ? 'left' : 'right'} hand couldn't reach it`)
           break
         }
@@ -1166,6 +1283,9 @@ export default function Humanoid() {
         }
         case 'clothFolded':
           S.mech.folds = [Math.PI, Math.PI, Math.PI]
+          break
+        case 'towelStack':
+          stackTowel()
           break
       }
     }

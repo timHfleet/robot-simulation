@@ -27,7 +27,7 @@ export type TaskId = 'sort' | 'dishes' | 'fold' | 'wash'
 export const TASKS: { id: TaskId; label: string; station: StationId; blurb: string }[] = [
   { id: 'sort', label: 'Sort blocks', station: 'sort', blurb: 'Pick each block and drop it in the bin of its colour, turning at the waist to reach across.' },
   { id: 'dishes', label: 'Load dishwasher', station: 'kitchen', blurb: 'Open the door, pull out the racks, load plates and cups, close up and start it.' },
-  { id: 'fold', label: 'Fold towel', station: 'laundry', blurb: 'Spread the crumpled towel flat by two corners, then fold it in half and in half again.' },
+  { id: 'fold', label: 'Fold towel', station: 'laundry', blurb: 'Take a towel from the basket, spread it flat by two corners, fold it in half twice and put it on the stack.' },
   { id: 'wash', label: 'Wash clothes', station: 'washer', blurb: 'Open the lid, move the clothes from the basket into the drum, close it and press start.' },
 ]
 
@@ -73,12 +73,14 @@ export type Act =
   /** Plan the next steps now, from what the scene looks like at this point in the task. */
   | { k: 'plan'; make: () => Act[] }
   | { k: 'clothFolded' }
+  /** Put the towel the hand holds onto the stack of folded towels, and ready the next one. */
+  | { k: 'towelStack' }
 
 export interface PlanCtx {
   /** Item world pose and where it is ('home', 'bin', 'rack', 'drum', ...). */
   item: (id: string) => { pos: THREE.Vector3; quat: THREE.Quaternion; where: string }
   ids: (kind: string) => string[]
-  /** World position of a named point on the shirt, as the head camera sees it now. */
+  /** World position of a named point on the towel ('top' = its highest point, 'centre' = its middle). */
   cloth: (feature: string) => THREE.Vector3
 }
 
@@ -363,8 +365,8 @@ function planDishes(ctx: PlanCtx): Act[] {
 // ---------------------------------------------------------------------------
 // Fold the shirt
 // ---------------------------------------------------------------------------
-function planFold(ctx: PlanCtx, foldsDone: boolean): Act[] {
-  if (foldsDone) return []
+function planFold(ctx: PlanCtx, towelsLeft: number): Act[] {
+  if (towelsLeft <= 0) return []
   const st: StationId = 'laundry'
   const T0 = LAUNDRY.table.h
   const pinchY = T0 + 0.014
@@ -378,8 +380,35 @@ function planFold(ctx: PlanCtx, foldsDone: boolean): Act[] {
     return p
   }
   const Wv = (p: THREE.Vector3) => W(p.x, p.y, p.z)
-  const acts = arrive(st, 'Folding the towel')
+  const acts = arrive(st, 'Folding a towel from the basket')
   const steps = 10
+
+  // 0. Take the top towel out of the basket and drop it on the table in front of the robot.
+  acts.push({
+    k: 'plan',
+    make: () => {
+      const p = ctx.cloth('top').addScaledVector(UP, 0.004)
+      const hold = (q: THREE.Vector3) => ({ ...at('L', q), keepWaist: true })
+      return [
+        { k: 'say', text: 'Taking a towel from the basket' },
+        { k: 'grip', side: 'L', g: 0.5 },
+        { k: 'move', arms: { L: at('L', up(p, 0.1)) } },
+        { k: 'move', arms: { L: at('L', p) }, slow: true },
+        { k: 'grip', side: 'L', g: 0 },
+        { k: 'clothGrab', side: 'L', feature: 'nearest' },
+        // Straight up out of the basket, across over the table, then down and forward so it
+        // lands in a loose heap in front of the robot.
+        { k: 'move', arms: { L: hold(W(0.52, T0 + 0.38, -0.5)) }, slow: true },
+        { k: 'move', arms: { L: hold(W(0.5, T0 + 0.36, -0.04)) }, slow: true },
+        { k: 'move', arms: { L: hold(W(0.6, T0 + 0.05, 0.02)) }, slow: true },
+        { k: 'grip', side: 'L', g: 0.5 },
+        { k: 'clothRelease', side: 'L' },
+        { k: 'move', arms: { L: at('L', W(0.58, T0 + 0.15, 0.0)) } },
+        { k: 'move', arms: { L: tuck('L') } },
+        { k: 'wait', t: 0.8 },
+      ]
+    },
+  })
 
   /** The towel's own axes as it lies now: u from the near edge to the far edge, v across (toward +b). */
   const axes = () => {
@@ -617,6 +646,32 @@ function planFold(ctx: PlanCtx, foldsDone: boolean): Act[] {
     },
     { k: 'clothFolded' },
     { k: 'say', text: 'Towel folded' },
+    {
+      // Carry the folded towel to the stack: the right hand presses into its middle, holds it
+      // all, lifts it and sets it down on the pile.
+      k: 'plan',
+      make: () => {
+        const c = ctx.cloth('centre')
+        c.y = ctx.cloth('top').y - 0.004
+        const S = LAUNDRY.stack
+        const over = W(S.a, T0 + 0.16, S.b)
+        return [
+          { k: 'say', text: 'Putting it on the stack' },
+          { k: 'grip', side: 'R', g: 0.5 },
+          { k: 'move', arms: { R: at('R', up(c, 0.08)) } },
+          { k: 'move', arms: { R: at('R', c) }, slow: true },
+          { k: 'grip', side: 'R', g: 0 },
+          { k: 'clothGrab', side: 'R', feature: 'all' },
+          { k: 'move', arms: { R: at('R', up(c, 0.12)) }, slow: true },
+          { k: 'move', arms: { R: at('R', over) }, slow: true },
+          { k: 'move', arms: { R: at('R', W(S.a, T0 + 0.07, S.b)) }, slow: true },
+          { k: 'towelStack' },
+          { k: 'grip', side: 'R', g: 0.5 },
+          { k: 'move', arms: { R: at('R', over) } },
+          tuckHands(),
+        ]
+      },
+    },
   ]
 
   // 1. Spread it: pick it up by one corner and let it hang, catch the corner at the other end
@@ -759,8 +814,8 @@ function planWash(ctx: PlanCtx): Act[] {
   return acts
 }
 
-export function planTask(id: TaskId, ctx: PlanCtx, opts: { foldsDone: boolean }): Act[] {
-  const acts = id === 'sort' ? planSort(ctx) : id === 'dishes' ? planDishes(ctx) : id === 'fold' ? planFold(ctx, opts.foldsDone) : planWash(ctx)
+export function planTask(id: TaskId, ctx: PlanCtx, opts: { towelsLeft: number }): Act[] {
+  const acts = id === 'sort' ? planSort(ctx) : id === 'dishes' ? planDishes(ctx) : id === 'fold' ? planFold(ctx, opts.towelsLeft) : planWash(ctx)
   // With the dishwasher door open a hanging arm would pass through it, so there the
   // free arm stays tucked until the end.
   return hangIdleArms(acts, id !== 'dishes')
