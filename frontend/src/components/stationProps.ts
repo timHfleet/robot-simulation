@@ -39,6 +39,8 @@ export interface Stations {
   /** Things items can be put in: station groups, the dishwasher racks, the washer drum. */
   containers: Record<string, THREE.Object3D>
   items: Map<string, THREE.Object3D>
+  /** Moving parts, for the physics engine. */
+  parts: { door: THREE.Object3D; lid: THREE.Object3D; drum: THREE.Object3D; racks: Record<RackId, THREE.Object3D> }
   /** Where each item is: 'home', 'held', 'bin:red', 'rack', 'drum', ... */
   where: Map<string, string>
   pickables: THREE.Object3D[]
@@ -559,5 +561,6 @@ export function buildStations(scene: THREE.Scene): Stations {
       if (d.t >= 1) o.userData.drop = null
     }
   }
-  return { groups, containers, items, where, pickables, mech, apply, reset }
+  const parts = { door: kitchen.door, lid: washer.lid, drum: washer.drum, racks: kitchen.racks }
+  return { groups, containers, items, where, pickables, mech, apply, reset, parts }
 }

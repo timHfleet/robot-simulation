@@ -17,10 +17,11 @@ const RESULTS: { label: string; value: string; note: string }[] = [
 ]
 
 const COMPARE: [string, string, string][] = [
-  ['Arm motion', 'Joints go where the kinematics say', 'Torque-limited motors push against mass and gravity'],
-  ['Holding an object', 'Item is attached to the hand', 'Finger pads squeeze; friction holds it, or it slips'],
-  ['Doors and racks', 'Follow the hand exactly', 'Hinge with a spring and damper; the hand must push and pull'],
-  ['Collisions', 'Keep-out boxes the planner avoids', 'Contacts between collision shapes, with real forces'],
+  ['Runs', 'Live in your browser (Rapier, WebAssembly, 120 Hz)', 'On your computer (Python), recorded here'],
+  ['Items', 'Rigid bodies with mass and friction: they fall, stack, tip over and tumble in the drum', 'Same, for the cup'],
+  ['Arm motion', 'Follows the controller exactly and shoves items it touches', 'Torque-limited motors push against mass and gravity'],
+  ['Holding an object', 'Holds only if the item is really between the fingers; let go and it drops', 'Finger pads squeeze; friction holds it, or it slips'],
+  ['Doors and racks', 'Move with the hand; solid, and carry what sits on them', 'Hinge with a spring and damper; the hand must push and pull'],
 ]
 
 const LOOP: { title: string; text: string; tone: 'plan' | 'physics' }[] = [
@@ -66,7 +67,8 @@ export default function PhysicsPage() {
             controls
           />
           <p className="mt-3 text-sm leading-relaxed text-slate-300">
-            The same robot, rebuilt in the <a className="text-cyan-300 hover:underline" href="https://mujoco.org" target="_blank" rel="noreferrer">MuJoCo</a> physics
+            The Simulator tab now runs live rigid-body physics (Rapier) for every item, the robot and the appliances. This page shows the
+            deeper version: the same robot, rebuilt in the <a className="text-cyan-300 hover:underline" href="https://mujoco.org" target="_blank" rel="noreferrer">MuJoCo</a> physics
             engine. It picks up a cup and opens a dishwasher with real mass, motor torque limits, contact and friction. The models are generated
             from this simulator’s own joint table, so both always describe the same arm. Recorded in real time from{' '}
             <a className="text-cyan-300 hover:underline" href={FILE('demo.py')} target="_blank" rel="noreferrer">
@@ -94,13 +96,13 @@ export default function PhysicsPage() {
         </Card>
       </div>
 
-      <Card title="Kinematic simulator vs. physics simulation">
+      <Card title="Physics in the simulator vs. MuJoCo">
         <div className="overflow-x-auto">
           <table className="w-full min-w-[560px] text-left text-sm">
             <thead>
               <tr className="text-xs uppercase tracking-wider text-slate-500">
                 <th className="pb-2 pr-4 font-medium" />
-                <th className="pb-2 pr-4 font-medium">This web simulator</th>
+                <th className="pb-2 pr-4 font-medium">Simulator tab · Rapier</th>
                 <th className="pb-2 font-medium text-cyan-300">MuJoCo physics</th>
               </tr>
             </thead>

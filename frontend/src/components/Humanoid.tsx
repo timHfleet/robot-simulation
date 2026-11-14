@@ -33,6 +33,7 @@ import { DOCKS, ITEMS, KITCHEN, STAGING, doorAngleFor, foldAngleFor, furnitureRe
 import { handPath, keepOutsFor, pathSteps, toRobotGoal, waistForMove, type HandGoal } from '../lib/motion'
 import { TASKS, planTask, type Act, type Mechanism, type PlanCtx, type TaskId } from '../lib/tasks'
 import { buildStations, type Mech, type Stations } from './stationProps'
+import { createPhysics, type Physics, type PhysicsStats } from './physicsWorld'
 
 // ---------------------------------------------------------------------------
 // Geometry (metres). Robot frame: x forward, y up, z to the robot's right.
@@ -697,6 +698,7 @@ interface Telemetry {
   ik: Record<Side, IKResult | null>
   task: { id: TaskId; label: string; step: number; total: number; text: string } | null
   log: string[]
+  physics: PhysicsStats | null
 }
 
 const KEYMAP: Record<string, string> = {
@@ -758,6 +760,7 @@ export default function Humanoid() {
     arms: { L: emptyArm(), R: emptyArm() },
     ik: { L: null, R: null },
     task: null,
+    physics: null,
     log: [],
   })
   const set = <K extends keyof Settings>(k: K, v: Settings[K]) => setSettings((s) => ({ ...s, [k]: v }))
@@ -794,6 +797,20 @@ export default function Humanoid() {
     if (!host) return
     const w = buildWorld(host)
     const st0 = settingsRef.current
+    /** Rigid-body physics for items, the robot's links and the stations' moving parts (loads asynchronously). */
+    let phys: Physics | null = null
+    let physFailed = false
+    let disposed = false
+    /** Build the physics world from the scene as it stands (items stay where they are). */
+    const startPhysics = () =>
+      createPhysics(w.scene, w.stations, { robot: w.robot, waist: w.waist, carriage: w.carriage, arms: w.arms }).then((p) => {
+        if (disposed) return p.dispose()
+        phys = p
+        if (import.meta.env.DEV) (window as unknown as { __physics: Physics }).__physics = p
+      })
+    startPhysics()
+    /** Items let go of, to check where they ended up once they settle. */
+    let landing: { id: string; where: string; at: number }[] = []
 
     const sim = {
       x: 0,
@@ -857,6 +874,11 @@ export default function Humanoid() {
 
     // ---------------------------------------------------------------- task runner
     const S = w.stations
+    const itemName = (id: string) => {
+      const def = ITEMS.find((d) => d.id === id)
+      if (!def) return id
+      return def.kind === 'block' ? `${def.color} block` : def.kind === 'cup' ? 'mug' : def.kind
+    }
     const say = (text: string) => {
       sim.log = [...sim.log.slice(-7), text]
     }
@@ -931,6 +953,8 @@ export default function Humanoid() {
       resetScene: () => {
         if (sim.task) endTask(null)
         S.reset()
+        phys?.reset()
+        landing = []
         say('Scene reset')
       },
     }
@@ -1013,6 +1037,12 @@ export default function Humanoid() {
           sim.gripT[a.side] = a.g
           break
         case 'grab': {
+          if (phys) {
+            // The grasp holds only if the item is really between the fingers.
+            if (phys.grab(a.side, a.item)) S.where.set(a.item, 'held')
+            else say(`Missed the ${itemName(a.item)}: it wasn't between the fingers`)
+            break
+          }
           const o = S.items.get(a.item)!
           o.userData.drop = null
           w.arms[a.side].joints[6].attach(o)
@@ -1020,6 +1050,14 @@ export default function Humanoid() {
           break
         }
         case 'release': {
+          if (phys) {
+            // Let go: the item drops and lands wherever physics puts it.
+            if (phys.release(a.side) === a.item) {
+              S.where.set(a.item, a.where)
+              landing.push({ id: a.item, where: a.where, at: sim.time + 1.5 })
+            }
+            break
+          }
           const o = S.items.get(a.item)!
           S.containers[a.container].attach(o)
           o.userData.drop = {
@@ -1355,6 +1393,31 @@ export default function Humanoid() {
       }
       sim.anims = sim.anims.filter((an) => an.t < 1)
       S.apply(sim.time, dt)
+      if (phys) {
+        try {
+          phys.step(dt)
+        } catch (err) {
+          // Safety net: a failed WebAssembly engine can't be reused, so carry on without physics
+          // (items then attach to the hand and settle into place, as before physics was added).
+          console.error('Physics engine failed; continuing without it', err)
+          phys = null
+          physFailed = true
+          for (const [id, where] of S.where) if (where === 'held') S.where.set(id, 'home')
+          say('Physics stopped after an engine error; reload the page to restart it')
+        }
+      }
+      if (phys) {
+        // Where did let-go items end up? One that fell off or bounced out goes back on the to-do list.
+        for (const l of landing) {
+          if (sim.time < l.at) continue
+          const p = phys.state(l.id).pos
+          if (p.y < 0.2) {
+            S.where.set(l.id, 'floor')
+            say(`The ${itemName(l.id)} fell on the floor`)
+          }
+        }
+        landing = landing.filter((l) => sim.time < l.at)
+      }
       runTask()
 
       // Head
@@ -1481,6 +1544,7 @@ export default function Humanoid() {
           ik: { ...sim.ik },
           task: T ? { id: T.id, label: T.label, step: Math.min(T.i + 1, T.acts.length), total: T.acts.length, text: T.text } : null,
           log: sim.log,
+          physics: phys ? phys.stats() : physFailed ? { awake: -1, contacts: 0, held: {} } : null,
         })
       }
       raf = requestAnimationFrame(loop)
@@ -1488,6 +1552,8 @@ export default function Humanoid() {
     raf = requestAnimationFrame(loop)
 
     return () => {
+      disposed = true
+      phys?.dispose()
       cancelAnimationFrame(raf)
       ro.disconnect()
       el.removeEventListener('pointerdown', onDown)
@@ -1637,6 +1703,9 @@ export default function Humanoid() {
             <Stat label="Shoulder height" value={`${Math.round(tele.lift * 100)} cm`} />
             <Stat label="Waist" value={`${Math.round(deg(tele.waist))}°`} />
             <Stat label="Arm reach" value={`${Math.round((UPPER + FORE + 0.14) * 100)} cm`} />
+            <Stat label="Physics" value={!tele.physics ? 'Loading…' : tele.physics.awake < 0 ? 'Stopped' : 'Rapier, 120 Hz'} />
+            <Stat label="Items moving" value={tele.physics && tele.physics.awake >= 0 ? String(tele.physics.awake) : '–'} />
+            <Stat label="Item contacts" value={tele.physics && tele.physics.awake >= 0 ? String(tele.physics.contacts) : '–'} />
           </div>
         </Card>
       </div>

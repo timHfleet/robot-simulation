@@ -425,7 +425,11 @@ function planFold(foldsDone: boolean): Act[] {
 // ---------------------------------------------------------------------------
 function planWash(ctx: PlanCtx): Act[] {
   const st: StationId = 'washer'
-  const clothes = ctx.ids('clothes').filter((id) => ctx.item(id).where === 'home')
+  // Take the pile from the top down, so nothing has to be pulled out from under the rest.
+  const clothes = ctx
+    .ids('clothes')
+    .filter((id) => ctx.item(id).where === 'home')
+    .sort((x, y) => ctx.item(y).pos.y - ctx.item(x).pos.y)
   if (!clothes.length) return []
   const fwd = dirWorld(st, 1, 0, 0)
   const right = dirWorld(st, 0, 0, 1)
