@@ -29,9 +29,9 @@ const SETTLE_MAX = 0.35
 /** Put the cloth to sleep this long (s) after it was last touched. */
 const SLEEP_AFTER = 3
 /** Particles stay this far apart (cloth thickness, both sides). */
-const MIN_DIST = 0.0085
+const MIN_DIST = 0.006
 /** Cloth rests this far above the table. */
-const REST_UP = 0.0045
+const REST_UP = 0.003
 /** Friction of cotton on the wooden table (static and sliding). */
 const MU_STATIC = 1.1
 const MU_KINETIC = 0.8
@@ -190,8 +190,8 @@ export function createCloth(parts: ClothParts): Cloth {
       link(r, c, r + 1, c - 1, 0.6)
       // Bending: keeps the cloth from crumpling when it's pulled, but never pushes a fold
       // back open (cloth lies folded flat without springing back).
-      link(r, c, r, c + 2, 0.3, 0.12)
-      link(r, c, r + 2, c, 0.3, 0.12)
+      link(r, c, r, c + 2, 0.15, 0.06)
+      link(r, c, r + 2, c, 0.15, 0.06)
     }
   const A = Int32Array.from(ca)
   const B = Int32Array.from(cb)
@@ -278,7 +278,7 @@ export function createCloth(parts: ClothParts): Cloth {
   /** Friction corrections gathered over all contacts, then averaged. */
   const fr = new Float32Array(N * 3)
   const fn = new Float32Array(N)
-  const BUCKETS = 8192
+  const BUCKETS = 16384
   const head = new Int32Array(BUCKETS)
   const next = new Int32Array(N)
   const key = (x: number, y: number, z: number) =>

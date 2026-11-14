@@ -154,8 +154,8 @@ export const LAUNDRY = {
   ] as { point: [number, number, number]; n: [number, number, number]; pinch: [number, number] }[],
 }
 export const CLOTH_Y = LAUNDRY.table.h + 0.003
-export const CLOTH_NU = 44 // cells along a (hem to collar)
-export const CLOTH_NV = 100 // cells along b (sleeve to sleeve)
+export const CLOTH_NU = 66 // cells along a (hem to collar)
+export const CLOTH_NV = 150 // cells along b (sleeve to sleeve)
 /** Radius of the rounded crease where the shirt folds over. */
 const CREASE = 0.004
 
