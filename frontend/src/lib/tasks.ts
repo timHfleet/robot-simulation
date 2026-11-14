@@ -444,14 +444,14 @@ function planFold(ctx: PlanCtx, foldsDone: boolean): Act[] {
      * pi). The arc is a little shorter than the cloth between the line and the hand, so the
      * flap is carried with some slack instead of pulling the rest of the shirt across the table.
      */
-    const over = (p: THREE.Vector3, p0: THREE.Vector3, axis: THREE.Vector3, th: number) => {
+    const over = (p: THREE.Vector3, p0: THREE.Vector3, axis: THREE.Vector3, th: number, height = 1) => {
       const r = p.clone().sub(p0).setY(0)
       const along = axis.clone().multiplyScalar(r.dot(axis))
       const w = r.clone().sub(along)
       const d = w.length()
       const R = th > 0 ? Math.max(0.02, d - 0.005) : d
       const q = p0.clone().add(along).addScaledVector(w, (Math.cos(th) * R) / Math.max(d, 1e-6))
-      q.y = pinchY + R * Math.sin(th)
+      q.y = pinchY + R * Math.sin(th) * height
       return W(q.x, q.y, q.z)
     }
     const steps = 10
@@ -518,13 +518,14 @@ function planFold(ctx: PlanCtx, foldsDone: boolean): Act[] {
     list.push({
       k: 'plan',
       make: () => {
-        // The hem as it lies now: its middle, and two grip points 11 cm apart along it,
-        // just inside the edge (the side folds have moved the original hem corners inward).
+        // The hem as it lies now: its middle, and two grip points 6 cm apart along it, well
+        // inside the folded strip (which is only about 9 to 15 cm wide), so each hand holds
+        // every layer there, including the folded-in sides.
         const hemMid = loc('hemInL').add(loc('hemInR')).multiplyScalar(0.5)
-        hemMid.addScaledVector(u, 0.012)
+        hemMid.addScaledVector(u, 0.015)
         hemMid.y = pinchY
-        const hl = hemMid.clone().addScaledVector(v, -0.055)
-        const hr = hemMid.clone().addScaledVector(v, 0.055)
+        const hl = hemMid.clone().addScaledVector(v, -0.03)
+        const hr = hemMid.clone().addScaledVector(v, 0.03)
         // Fold line halfway between the hem and the shoulders.
         const sMid = loc('shoulderL').add(loc('shoulderR')).multiplyScalar(0.5)
         const mid = hemMid.clone().add(sMid).multiplyScalar(0.5)
@@ -542,14 +543,11 @@ function planFold(ctx: PlanCtx, foldsDone: boolean): Act[] {
           { k: 'clothGrab', side: 'L', feature: 'nearest' },
           { k: 'clothGrab', side: 'R', feature: 'nearest' },
         ]
-        // Pull the hem taut between the hands, then fold it up.
-        const sideways = hr.clone().sub(hl).setY(0).normalize()
-        hl.addScaledVector(sideways, -0.01)
-        hr.addScaledVector(sideways, 0.01)
-        b.push({ k: 'move', arms: { L: at('L', W(hl.x, hl.y, hl.z)), R: at('R', W(hr.x, hr.y, hr.z)) }, slow: true })
+        // No sideways pull here (it would drag the folded-in sides open again), and a low, flat
+        // arc: lifted high, the flap hangs vertical and its folded layers fall away from the grip.
         for (let i = 1; i <= steps; i++) {
           const th = (Math.PI * i) / steps
-          b.push({ k: 'move', arms: { L: at('L', over(hl, mid, v, th)), R: at('R', over(hr, mid, v, th)) }, via: i < steps, slow: true })
+          b.push({ k: 'move', arms: { L: at('L', over(hl, mid, v, th, 0.45)), R: at('R', over(hr, mid, v, th, 0.45)) }, via: i < steps, slow: true })
         }
         b.push(
           { k: 'grip', side: 'L', g: 0.5 },

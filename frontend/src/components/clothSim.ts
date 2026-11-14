@@ -93,6 +93,8 @@ export interface Cloth {
   grabFeature(side: 'L' | 'R', name: Feature, tcp: THREE.Vector3, stack?: boolean): number
   /** Is the cloth at rest (nothing held, nothing moving)? */
   sleeping(): boolean
+  /** Debugging: positions of the simulated particles (station-local x, y, z triples). */
+  particles(): number[]
   /** Debugging: the nearest cloth particle to a station-local point. */
   probe(x: number, z: number): { active: number; nearest: number; at: number[] }
 }
@@ -302,6 +304,7 @@ export function createCloth(parts: ClothParts): Cloth {
       head[h] = k
     }
     const d2min = MIN_DIST * MIN_DIST
+    const d2fric = (MIN_DIST * 1.35) ** 2
     for (let k = 0; k < N; k++) {
       if (!active[k]) continue
       const x = pos[k * 3]
@@ -320,24 +323,32 @@ export function createCloth(parts: ClothParts): Cloth {
               const ey = pos[m * 3 + 1] - y
               const ez = pos[m * 3 + 2] - z
               const d2 = ex * ex + ey * ey + ez * ez
-              if (d2 >= d2min || d2 < 1e-12) continue
+              if (d2 >= d2fric || d2 < 1e-12) continue
               const w = inv[k] + inv[m]
               if (!w) continue
               const d = Math.sqrt(d2)
-              const s = (MIN_DIST - d) / d / w
-              pos[k * 3] -= ex * s * inv[k]
-              pos[k * 3 + 1] -= ey * s * inv[k]
-              pos[k * 3 + 2] -= ez * s * inv[k]
-              pos[m * 3] += ex * s * inv[m]
-              pos[m * 3 + 1] += ey * s * inv[m]
-              pos[m * 3 + 2] += ez * s * inv[m]
-              // Cotton grips cotton: layers in contact mostly move together.
-              for (let e = 0; e < 3; e++) {
-                const vk = pos[k * 3 + e] - prev[k * 3 + e]
-                const vm = pos[m * 3 + e] - prev[m * 3 + e]
-                const dv = (vm - vk) * LAYER_GRIP * 0.5
-                prev[k * 3 + e] -= dv * (inv[k] / w) * 2
-                prev[m * 3 + e] += dv * (inv[m] / w) * 2
+              if (d2 < d2min) {
+                // Too close: push the two layers apart to the cloth's thickness.
+                const s = (MIN_DIST - d) / d / w
+                pos[k * 3] -= ex * s * inv[k]
+                pos[k * 3 + 1] -= ey * s * inv[k]
+                pos[k * 3 + 2] -= ez * s * inv[k]
+                pos[m * 3] += ex * s * inv[m]
+                pos[m * 3 + 1] += ey * s * inv[m]
+                pos[m * 3 + 2] += ez * s * inv[m]
+              }
+              // Cotton grips cotton: layers lying on each other (at their resting gap, not only
+              // when squeezed) move together, applied to this step's displacements. A layer held
+              // by the hand drags the ones lying on it along; a folded flap stays closed.
+              // Friction needs pressure: only a layer resting on another (contact mostly
+              // vertical) grips; layers hanging side by side in the air slide apart freely.
+              const press = Math.max(0, (Math.abs(ey) / d - 0.6) / 0.4)
+              if (press > 0) for (let e = 0; e < 3; e++) {
+                const dk = pos[k * 3 + e] - prev[k * 3 + e]
+                const dm = pos[m * 3 + e] - prev[m * 3 + e]
+                const dv = (dm - dk) * LAYER_GRIP * press
+                pos[k * 3 + e] += dv * (inv[k] / w)
+                pos[m * 3 + e] -= dv * (inv[m] / w)
               }
             }
           }
@@ -585,6 +596,11 @@ export function createCloth(parts: ClothParts): Cloth {
       if (import.meta.env.DEV)
         console.debug(`[cloth] ${side} grabs ${name}: ${pins[side].length} particles, ${(Math.hypot(pos[k0 * 3] - tcp.x, pos[k0 * 3 + 1] - tcp.y, pos[k0 * 3 + 2] - tcp.z) * 1000).toFixed(0)} mm from the fingertips`)
       return pins[side].length
+    },
+    particles: () => {
+      const out: number[] = []
+      for (let k = 0; k < N; k++) if (active[k]) out.push(pos[k * 3], pos[k * 3 + 1], pos[k * 3 + 2])
+      return out
     },
     probe: (x: number, z: number) => {
       let best = 1e9
