@@ -54,6 +54,9 @@ const ACCEL = 1.4
 const TURN_ACCEL = 6
 const MAX_TURN = 1.6
 const SIDES: Side[] = ['L', 'R']
+/** Wrist-camera views: width as a fraction of the scene's, and the gap from its edges (px). */
+const INSET_W = 0.24
+const INSET_M = 10
 /** How quickly arm moves reach full speed along their path (fraction of full speed per second). */
 const PATH_ACCEL = 2.5
 
@@ -207,6 +210,8 @@ interface ArmRig {
   leds: THREE.MeshStandardMaterial[]
   fingers: [THREE.Group, THREE.Group]
   tcp: THREE.Mesh
+  /** Wrist camera on the palm, looking down past the fingers at what the hand is about to grip. */
+  cam: THREE.PerspectiveCamera
 }
 
 /** Build one arm from the joint table, with an actuator at every joint. */
@@ -315,7 +320,18 @@ function buildArm(side: Side, carriage: THREE.Group): ArmRig {
   tcp.renderOrder = 5
   tcp.visible = false
   g6.add(tcp)
-  return { side, joints, axes, leds, fingers: fingers as [THREE.Group, THREE.Group], tcp }
+  // Wrist camera: a small lens on the back of the palm, aimed down between the fingertips
+  // (fingers close left-right in its picture).
+  const lens = new THREE.Mesh(new THREE.CylinderGeometry(0.008, 0.008, 0.01, 16), MAT.black)
+  lens.rotation.z = Math.PI / 2
+  lens.position.set(0.032, -0.08, 0)
+  g6.add(lens)
+  const cam = new THREE.PerspectiveCamera(72, 4 / 3, 0.005, 4)
+  const eye = new THREE.Vector3(0.046, -0.082, 0)
+  cam.position.copy(eye)
+  cam.quaternion.setFromRotationMatrix(new THREE.Matrix4().lookAt(eye, new THREE.Vector3(0, -0.165, 0), new THREE.Vector3(1, 0, 0)))
+  g6.add(cam)
+  return { side, joints, axes, leds, fingers: fingers as [THREE.Group, THREE.Group], tcp, cam }
 }
 
 function poseArm(arm: ArmRig, q: number[], grip: number) {
@@ -663,6 +679,8 @@ interface Settings {
   lift: number
   follow: boolean
   autoHead: boolean
+  /** Show the two wrist-camera views over the 3D scene. */
+  wristCams: boolean
   pan: number
   tilt: number
   /** Joint-mode targets. */
@@ -736,6 +754,7 @@ export default function Humanoid() {
     lift: 1.12,
     follow: true,
     autoHead: true,
+    wristCams: true,
     pan: 0,
     tilt: 0,
     // Idle: arms hanging straight down at the sides.
@@ -1425,6 +1444,7 @@ export default function Humanoid() {
     window.addEventListener('blur', onBlur)
 
     const clock = new THREE.Clock()
+    const insetSize = new THREE.Vector2()
     let raf = 0
     let teleT = 0
     const baseM = new THREE.Matrix4()
@@ -1731,6 +1751,27 @@ export default function Humanoid() {
       w.sun.target.position.copy(pos)
       w.controls.update()
       w.renderer.render(w.scene, w.camera)
+      // Wrist cameras: each gripper's view, drawn into the bottom-right corner of the scene.
+      if (st.wristCams) {
+        const r = w.renderer
+        const size = r.getSize(insetSize)
+        const iw = Math.round(size.x * INSET_W)
+        const ih = Math.round(iw * 0.75)
+        r.shadowMap.autoUpdate = false
+        r.setScissorTest(true)
+        SIDES.forEach((side, i) => {
+          const x = size.x - (2 - i) * (iw + INSET_M)
+          const cam = w.arms[side].cam
+          cam.aspect = iw / ih
+          cam.updateProjectionMatrix()
+          r.setViewport(x, INSET_M, iw, ih)
+          r.setScissor(x, INSET_M, iw, ih)
+          r.render(w.scene, cam)
+        })
+        r.setScissorTest(false)
+        r.setViewport(0, 0, size.x, size.y)
+        r.shadowMap.autoUpdate = true
+      }
 
       // ---- Telemetry and joint loads (10 Hz) ------------------------------
       teleT += dt
@@ -1846,7 +1887,28 @@ export default function Humanoid() {
                 >
                   Reset robot
                 </button>
+                <button
+                  type="button"
+                  onClick={() => set('wristCams', !settings.wristCams)}
+                  className="rounded bg-slate-800 px-2 py-1 text-slate-300 ring-1 ring-slate-700 hover:bg-slate-700"
+                >
+                  Gripper cameras: {settings.wristCams ? 'on' : 'off'}
+                </button>
               </div>
+              {settings.wristCams &&
+                (['L', 'R'] as Side[]).map((side, i) => (
+                  <div
+                    key={side}
+                    className="pointer-events-none absolute aspect-[4/3] rounded-sm ring-1 ring-slate-500/80"
+                    style={{ width: `${INSET_W * 100}%`, bottom: INSET_M, right: `calc(${(1 - i) * INSET_W * 100}% + ${(2 - i) * INSET_M}px)` }}
+                  >
+                    <span className="absolute left-1 top-1 rounded bg-slate-900/80 px-1.5 py-0.5 text-[10px] text-slate-200">
+                      {side === 'L' ? 'Left' : 'Right'} gripper camera
+                    </span>
+                    {/* Where the fingertips close. */}
+                    <span className="absolute left-1/2 top-1/2 h-3 w-3 -translate-x-1/2 -translate-y-1/2 rounded-full ring-1 ring-cyan-300/80" />
+                  </div>
+                ))}
             </div>
           </div>
         </Card>
