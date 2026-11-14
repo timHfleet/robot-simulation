@@ -27,7 +27,7 @@ export type TaskId = 'sort' | 'dishes' | 'fold' | 'wash'
 export const TASKS: { id: TaskId; label: string; station: StationId; blurb: string }[] = [
   { id: 'sort', label: 'Sort blocks', station: 'sort', blurb: 'Pick each block and drop it in the bin of its colour, turning at the waist to reach across.' },
   { id: 'dishes', label: 'Load dishwasher', station: 'kitchen', blurb: 'Open the door, pull out the racks, load plates and cups, close up and start it.' },
-  { id: 'fold', label: 'Fold towel', station: 'laundry', blurb: 'Spread the crumpled towel flat by two corners, fold it in half, then fold both ends in to the middle.' },
+  { id: 'fold', label: 'Fold towel', station: 'laundry', blurb: 'Spread the crumpled towel flat by two corners, then fold it in half and in half again.' },
   { id: 'wash', label: 'Wash clothes', station: 'washer', blurb: 'Open the lid, move the clothes from the basket into the drum, close it and press start.' },
 ]
 
@@ -482,6 +482,37 @@ function planFold(ctx: PlanCtx, foldsDone: boolean): Act[] {
     return list
   }
 
+  /**
+   * Second fold: the left hand takes the left end of the strip (through both layers) and lays it
+   * on the right end, along a low arc, with the waist turning to give the reach across.
+   */
+  const halfAgain = (): Act[] => {
+    const { u, v } = stripAxes()
+    const lefter = loc('endL').dot(v) <= loc('endR').dot(v)
+    const fL = lefter ? 'endL' : 'endR'
+    const fR = lefter ? 'endR' : 'endL'
+    const pL = loc(fL).addScaledVector(v, 0.012)
+    const line = pL.clone().add(loc(fR)).multiplyScalar(0.5)
+    const list: Act[] = [
+      { k: 'say', text: 'Folding it in half again' },
+      { k: 'move', arms: { R: tuck('R') } },
+      { k: 'grip', side: 'L', g: 0.5 },
+      { k: 'move', arms: { L: at('L', up(Wv(pL), 0.08)) } },
+      { k: 'move', arms: { L: at('L', Wv(pL)) }, slow: true },
+      { k: 'grip', side: 'L', g: 0 },
+      { k: 'clothGrab', side: 'L', feature: fL, stack: true, radius: 0.06 },
+    ]
+    for (let i = 1; i <= steps; i++) list.push({ k: 'move', arms: { L: at('L', over(pL, line, u, (Math.PI * i) / steps, 0.55)) }, via: i < steps, slow: true })
+    list.push(
+      { k: 'grip', side: 'L', g: 0.5 },
+      { k: 'clothRelease', side: 'L' },
+      { k: 'move', arms: { L: at('L', up(over(pL, line, u, Math.PI, 0.55), 0.1)) }, via: true },
+      tuckHands(),
+      { k: 'wait', t: 0.4 },
+    )
+    return list
+  }
+
   /** Both ends of the folded strip in to the middle at once, each hand gripping its end's middle. */
   const gate = (): Act[] => {
     const { u, v } = stripAxes()
@@ -573,16 +604,15 @@ function planFold(ctx: PlanCtx, foldsDone: boolean): Act[] {
         return press([-0.12, 0, 0.12].map((d) => mid.clone().addScaledVector(v, d)), 'Pressing the fold flat')
       },
     },
-    // Gate fold: both hands fold their own end of the strip in to meet in the middle, at the
-    // same time, so the two pulls cancel out and neither arm has to reach across the body.
-    { k: 'plan', make: gate },
+    // In half again: the left end of the strip over onto the right end.
+    { k: 'plan', make: halfAgain },
     // Press the finished towel flat.
     {
       k: 'plan',
       make: () => {
         const { u } = stripAxes()
         const mid = loc('endL').add(loc('endR')).multiplyScalar(0.5)
-        return press([-0.03, 0.03].map((d) => mid.clone().addScaledVector(u, d)), 'Pressing the towel flat')
+        return press([0].map((d) => mid.clone().addScaledVector(u, d)), 'Pressing the towel flat')
       },
     },
     { k: 'clothFolded' },
