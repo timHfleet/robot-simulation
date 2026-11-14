@@ -815,9 +815,9 @@ export default function Humanoid() {
           if (import.meta.env.DEV) (window as unknown as { __physics: Physics }).__physics = p
         })
     startPhysics()
-    // The shirt is simulated cloth: the hands pinch it and it drapes and folds under gravity.
+    // The towel is simulated cloth: the hands pinch it and it drapes and folds under gravity.
     const cloth = createCloth(w.stations.parts.cloth)
-    const CLOTH_FRAME = 16 / 120
+    const clothFrame = () => cloth.tune.maxSteps / 120
     w.stations.useClothPhysics()
     if (import.meta.env.DEV) Object.assign(window, { __world: w, __cloth: cloth })
     /** Items let go of, to check where they ended up once they settle. */
@@ -1142,8 +1142,8 @@ export default function Humanoid() {
           const tcp = toLocal('laundry', tcpWorld(a.side))
           if (import.meta.env.DEV)
             console.debug(`[clothGrab] ${a.side} ${a.feature}: hand ${tcp.toArray().map((v) => v.toFixed(3))}, point ${cloth.feature(a.feature as Feature).toArray().map((v) => v.toFixed(3))}, q ${sim.q[a.side].map((v) => Math.round(deg(v)))}`)
-          const caught = a.feature === 'nearest' ? cloth.grabAt(a.side, tcp) : cloth.grabFeature(a.side, a.feature as Feature, tcp, a.stack)
-          if (!caught) say(`Missed the shirt: the ${a.side === 'L' ? 'left' : 'right'} hand couldn't reach it`)
+          const caught = a.feature === 'nearest' ? cloth.grabAt(a.side, tcp) : cloth.grabFeature(a.side, a.feature as Feature, tcp, a.stack, a.radius)
+          if (!caught) say(`Missed the towel: the ${a.side === 'L' ? 'left' : 'right'} hand couldn't reach it`)
           break
         }
         case 'clothRelease':
@@ -1151,6 +1151,9 @@ export default function Humanoid() {
           break
         case 'clothSweep':
           cloth.sweep(a.side, a.on)
+          break
+        case 'clothPress':
+          cloth.press(a.side, a.on)
           break
         case 'wait':
           sim.waitUntil = sim.time + a.t
@@ -1207,7 +1210,7 @@ export default function Humanoid() {
         T.started = false
       }
     }
-    /** Doors, racks, the lid and the shirt follow a hand that holds them. */
+    /** Doors, racks and the lid follow a hand that holds them. */
     const updateBindings = (mech: Mech) => {
       for (const side of SIDES) {
         const b = sim.binds[side]
@@ -1310,7 +1313,7 @@ export default function Humanoid() {
       // While the cloth is moving, simulated time advances at most 16 cloth steps (1/120 s each)
       // per frame: on a slow machine or at high task speed the whole scene slows down rather than
       // the cloth taking coarse steps (which would let folded layers pass through each other).
-      const dt = Math.min(cloth.sleeping() ? 0.5 : CLOTH_FRAME, Math.min(0.25, clock.getDelta()) * (sim.task ? settingsRef.current.speed : 1))
+      const dt = Math.min(cloth.sleeping() ? 0.5 : clothFrame(), Math.min(0.25, clock.getDelta()) * (sim.task ? settingsRef.current.speed : 1))
       const steps = Math.max(1, Math.ceil(dt / 0.01))
       const h = dt / steps
       const t = clock.elapsedTime
@@ -1870,7 +1873,7 @@ export default function Humanoid() {
           )}
           <p className="mt-3 text-xs leading-relaxed text-slate-400">
             The robot drives to each station, docks, and plans every grasp with inverse kinematics (hand position plus which way the
-            fingers point and close). Doors, racks, the lid and the shirt follow the hand that holds them.
+            fingers point and close). Items, the towel and the doors, racks and lid move under physics as the hands act on them.
           </p>
         </Card>
 

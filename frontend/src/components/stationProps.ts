@@ -5,7 +5,7 @@
  */
 import * as THREE from 'three'
 import { RoundedBoxGeometry } from 'three/examples/jsm/geometries/RoundedBoxGeometry.js'
-import { knitBump, shirtTextures, stoneTexture, wickerTextures, woodTexture } from './textures'
+import { knitBump, stoneTexture, towelTextures, wickerTextures, woodTexture } from './textures'
 import {
   CLOTH_NU,
   CLOTH_NV,
@@ -17,7 +17,7 @@ import {
   WASHER,
   foldShirt,
   rackOrigin,
-  shirtGrid,
+  towelGrid,
   type ItemDef,
   type RackId,
   type StationId,
@@ -350,7 +350,7 @@ function buildLaundry(g: THREE.Group, pick: THREE.Object3D[]): LaundryParts {
   const tb = table(t.a0, t.a1, t.b0, t.b1, t.h, mat('#ffffff', { map: woodTexture([1, 1], '#d9c3a3'), roughness: 0.5, metalness: 0 }), M.steelDark)
   g.add(tb)
   pick.push(tb)
-  const { verts: flat, uv } = shirtGrid()
+  const { verts: flat, uv } = towelGrid()
   const geo = new THREE.BufferGeometry()
   const verts = new Float32Array(flat)
   geo.setAttribute('position', new THREE.BufferAttribute(verts, 3))
@@ -364,39 +364,29 @@ function buildLaundry(g: THREE.Group, pick: THREE.Object3D[]): LaundryParts {
   }
   geo.setIndex(index)
   geo.computeVertexNormals()
-  // Heathered navy cotton jersey; the T-shirt outline is cut out of the grid by the alpha map.
-  const tx = shirtTextures()
+  // Terry hand towel: matte, with a fine loop texture.
+  const tx = towelTextures()
   const cloth = new THREE.Mesh(
     geo,
     new THREE.MeshPhysicalMaterial({
       map: tx.map,
-      alphaMap: tx.alpha,
-      alphaTest: 0.5,
       bumpMap: tx.bump,
-      bumpScale: 0.9,
-      roughness: 0.93,
+      bumpScale: 1.6,
+      roughness: 0.97,
       metalness: 0,
-      sheen: 0.25,
-      sheenRoughness: 0.8,
-      sheenColor: new THREE.Color('#4f6788'),
-      envMapIntensity: 0.4,
+      sheen: 0.4,
+      sheenRoughness: 0.9,
+      sheenColor: new THREE.Color('#bfe0ea'),
+      envMapIntensity: 0.35,
       side: THREE.DoubleSide,
     }),
   )
-  // Shadows follow the shirt's outline, not the whole grid.
-  cloth.customDepthMaterial = new THREE.MeshDepthMaterial({ depthPacking: THREE.RGBADepthPacking, alphaMap: tx.alpha, alphaTest: 0.5, side: THREE.DoubleSide })
   cloth.castShadow = true
   cloth.receiveShadow = true
   cloth.frustumCulled = false
   g.add(cloth)
-  // The outline, read back from the transparency texture (u across the shirt, v hem to collar).
-  const img = tx.alpha.image as HTMLCanvasElement
-  const px = img.getContext('2d')!.getImageData(0, 0, img.width, img.height).data
-  const mask = (u: number, v: number) => {
-    const x = Math.min(img.width - 1, Math.max(0, Math.round(u * (img.width - 1))))
-    const y = Math.min(img.height - 1, Math.max(0, Math.round((1 - v) * (img.height - 1))))
-    return px[(y * img.width + x) * 4] > 127
-  }
+  // A towel is a plain rectangle: every point of the grid is cloth.
+  const mask = () => true
   return { cloth, flat, verts, mask }
 }
 

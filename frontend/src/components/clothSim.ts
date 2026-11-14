@@ -17,8 +17,6 @@ import * as THREE from 'three'
 import { CLOTH_NU, CLOTH_NV, CLOTH_Y, LAUNDRY } from '../lib/stations'
 
 const STEP = 1 / 120
-/** Most cloth steps per frame; beyond that each step gets longer, so the cloth keeps time with the robot. */
-const MAX_STEPS = 16
 const ITERS = 10
 const GRAVITY = -9.81
 const DAMPING = 0.012
@@ -36,8 +34,11 @@ const REST_UP = 0.003
 const MU_STATIC = 1.1
 const MU_KINETIC = 0.8
 /** How strongly touching layers of cloth are made to move together (0 to 1). */
-/** Tunable at run time in development (window.__cloth.tune). */
-const TUNE = { layerGrip: 0.8, selfCollide: true }
+/**
+ * Tunable at run time in development (window.__cloth.tune). maxSteps: most cloth steps per
+ * frame; beyond that each step gets longer, so the cloth keeps time with the robot.
+ */
+const TUNE = { layerGrip: 0.8, selfCollide: true, maxSteps: 16, bend: 0.5, bendSquash: 0.3 }
 const PINCH_R = 0.045
 /** How far from the fingertips the hand can still catch an edge of cloth. */
 const REACH = 0.09
@@ -45,6 +46,8 @@ const REACH = 0.09
 const GRASP_TOL = 0.04
 /** Radius of cloth a smoothing hand carries along (fingertips and the pads between them). */
 const SWEEP_R = 0.035
+/** Half the size of the flat area a pressing hand covers (m). */
+const PRESS_HALF = 0.045
 /** A stack grasp holds every layer within this distance of the point (the width of the gripper's hold on an edge). */
 const STACK_R = 0.03
 
@@ -56,23 +59,25 @@ export interface ClothParts {
   mask: (u: number, v: number) => boolean
 }
 
-/** Named points on the shirt, as (distance up from the hem, across from the centre) in metres. */
+/**
+ * Named points on the towel, as (distance in from the near edge, across from the centre)
+ * in metres when it lies flat: its four corners, points 10 cm in from the corners along
+ * the long edges, and the middles of the two short ends.
+ */
 export const FEATURES = {
-  shoulderL: [0.255, -0.14],
-  shoulderR: [0.255, 0.14],
-  sleeveL: [0.19, -0.28],
-  sleeveR: [0.19, 0.28],
-  sideL: [0.12, -0.15],
-  sideR: [0.12, 0.15],
-  sideTopL: [0.2, -0.15],
-  sideTopR: [0.2, 0.15],
-  sideLowL: [0.04, -0.14],
-  sideLowR: [0.04, 0.14],
-  hemL: [0.012, -0.14],
-  hemR: [0.012, 0.14],
-  hemInL: [0.015, -0.065],
-  hemInR: [0.015, 0.065],
-  collar: [0.27, 0],
+  topL: [0.29, -0.22],
+  topR: [0.29, 0.22],
+  topInL: [0.29, -0.1],
+  topInR: [0.29, 0.1],
+  botL: [0.01, -0.22],
+  botR: [0.01, 0.22],
+  botInL: [0.01, -0.1],
+  botInR: [0.01, 0.1],
+  midL: [0.15, -0.22],
+  midR: [0.15, 0.22],
+  /** Middles of the ends of the far half: once folded in half, the middles of the strip's ends. */
+  endL: [0.225, -0.22],
+  endR: [0.225, 0.22],
 } as const
 export type Feature = keyof typeof FEATURES
 
@@ -90,6 +95,8 @@ export interface Cloth {
    * the hand (cloth further away is held by the table), which pulls out wrinkles.
    */
   sweep(side: 'L' | 'R', on: boolean): void
+  /** Pressing: while on, the hand is a flat paddle under the fingertips that cloth can't pass up through. */
+  press(side: 'L' | 'R', on: boolean): void
   /** Put the shirt back: flat, or (by default) dropped in a crumpled heap, different each time. */
   reset(crumpled?: boolean): void
   /** Station-local position of a named point on the shirt (shoulders, sleeves, hem, collar). */
@@ -98,11 +105,11 @@ export interface Cloth {
    * Pinch a named point with the fingertips (station-local hand position). `stack`: pinch
    * through every layer lying at that spot, as fingers closing on a folded edge do.
    */
-  grabFeature(side: 'L' | 'R', name: Feature, tcp: THREE.Vector3, stack?: boolean): number
+  grabFeature(side: 'L' | 'R', name: Feature, tcp: THREE.Vector3, stack?: boolean, radius?: number): number
   /** Is the cloth at rest (nothing held, nothing moving)? */
   sleeping(): boolean
   /** Debugging: live tuning switches. */
-  tune: { layerGrip: number; selfCollide: boolean }
+  tune: { layerGrip: number; selfCollide: boolean; maxSteps: number; bend: number; bendSquash: number }
   /** Debugging: positions of the simulated particles (station-local x, y, z triples). */
   particles(): number[]
   /** Debugging: the nearest cloth particle to a station-local point. */
@@ -150,7 +157,7 @@ export function createCloth(parts: ClothParts): Cloth {
   const featureIdx = {} as Record<Feature, number>
   for (const name of Object.keys(FEATURES) as Feature[]) {
     const [fa, fb] = FEATURES[name]
-    const x = LAUNDRY.shirt.hemA + fa
+    const x = LAUNDRY.towel.nearA + fa
     let best = -1
     let bd = Infinity
     for (let k = 0; k < N; k++) {
@@ -190,8 +197,9 @@ export function createCloth(parts: ClothParts): Cloth {
       link(r, c, r + 1, c - 1, 0.6)
       // Bending: keeps the cloth from crumpling when it's pulled, but never pushes a fold
       // back open (cloth lies folded flat without springing back).
-      link(r, c, r, c + 2, 0.15, 0.06)
-      link(r, c, r + 2, c, 0.15, 0.06)
+      // Terry towelling is thick and springy: it bends to fold but resists crumpling.
+      link(r, c, r, c + 2, TUNE.bend, TUNE.bendSquash)
+      link(r, c, r + 2, c, TUNE.bend, TUNE.bendSquash)
     }
   const A = Int32Array.from(ca)
   const B = Int32Array.from(cb)
@@ -206,6 +214,7 @@ export function createCloth(parts: ClothParts): Cloth {
   let idle = 0
   const lastHands: Partial<Record<'L' | 'R', THREE.Vector3>> = {}
   const sweeping = { L: false, R: false }
+  const pressing = { L: false, R: false }
   const lastSweep: Partial<Record<'L' | 'R', THREE.Vector3>> = {}
   const _h2 = new THREE.Vector3()
   const _h = new THREE.Vector3()
@@ -230,7 +239,7 @@ export function createCloth(parts: ClothParts): Cloth {
    * reset picks a different point and swing.
    */
   const crumple = (n: number) => {
-    const holds: Feature[] = ['collar', 'hemR', 'sleeveL', 'shoulderR', 'hemL', 'sleeveR']
+    const holds: Feature[] = ['topL', 'botR', 'midL', 'topR', 'botL', 'midR']
     const hold = holds[n % holds.length]
     const k0 = featureIdx[hold]
     const start = new THREE.Vector3(pos[k0 * 3], pos[k0 * 3 + 1], pos[k0 * 3 + 2])
@@ -467,6 +476,20 @@ export function createCloth(parts: ClothParts): Cloth {
     }
     if (TUNE.selfCollide) selfCollide()
     for (let k = 0; k < N; k++) if (active[k]) collideTable(k)
+    // Pressing hands: a flat paddle (the closed gripper) the cloth below can't rise through.
+    for (const side of ['L', 'R'] as const) {
+      const cur = hands[side]
+      if (!pressing[side] || !cur) continue
+      const hp = _h2.lerpVectors(lastHands[side] ?? cur, cur, t)
+      for (let k = 0; k < N; k++) {
+        if (!inv[k]) continue
+        if (Math.abs(pos[k * 3] - hp.x) > PRESS_HALF || Math.abs(pos[k * 3 + 2] - hp.z) > PRESS_HALF) continue
+        if (pos[k * 3 + 1] > hp.y && pos[k * 3 + 1] < hp.y + 0.05) {
+          pos[k * 3 + 1] = hp.y
+          prev[k * 3 + 1] = Math.min(prev[k * 3 + 1], hp.y)
+        }
+      }
+    }
     // Smoothing hands: everything under the fingertips moves with the hand.
     for (const side of ['L', 'R'] as const) {
       const cur = hands[side]
@@ -524,14 +547,14 @@ export function createCloth(parts: ClothParts): Cloth {
 
   return {
     step: (dt, hands) => {
-      const held = pins.L.length + pins.R.length > 0 || sweeping.L || sweeping.R
+      const held = pins.L.length + pins.R.length > 0 || sweeping.L || sweeping.R || pressing.L || pressing.R
       if (asleep && !held) {
         for (const side of ['L', 'R'] as const) if (hands[side]) lastHands[side] = hands[side]!.clone()
         return
       }
       acc = Math.min(acc + dt, 0.5)
       if (acc < STEP) return
-      const n = Math.min(MAX_STEPS, Math.floor(acc / STEP))
+      const n = Math.min(TUNE.maxSteps, Math.floor(acc / STEP))
       const h = acc / n
       acc = 0
       let moved = 0
@@ -608,6 +631,11 @@ export function createCloth(parts: ClothParts): Cloth {
       still = 0
       return pins[side].length
     },
+    press: (side, on) => {
+      pressing[side] = on
+      asleep = false
+      still = 0
+    },
     sweep: (side, on) => {
       sweeping[side] = on
       delete lastSweep[side]
@@ -626,7 +654,7 @@ export function createCloth(parts: ClothParts): Cloth {
       const k = featureIdx[name]
       return new THREE.Vector3(pos[k * 3], pos[k * 3 + 1], pos[k * 3 + 2])
     },
-    grabFeature: (side, name, tcp, stack = false) => {
+    grabFeature: (side, name, tcp, stack = false, radius = STACK_R) => {
       for (const p of pins[side]) inv[p.k] = 1
       pins[side] = []
       const k0 = featureIdx[name]
@@ -639,7 +667,7 @@ export function createCloth(parts: ClothParts): Cloth {
         const z = pos[k0 * 3 + 2]
         for (let k = 0; k < N; k++) {
           if (!active[k]) continue
-          if (Math.hypot(pos[k * 3] - x, pos[k * 3 + 2] - z) < STACK_R && Math.abs(pos[k * 3 + 1] - pos[k0 * 3 + 1]) < 0.04) set.add(k)
+          if (Math.hypot(pos[k * 3] - x, pos[k * 3 + 2] - z) < radius && Math.abs(pos[k * 3 + 1] - pos[k0 * 3 + 1]) < 0.04) set.add(k)
         }
       }
       pins[side] = [...set].map((k) => ({ k, off: [pos[k * 3] - tcp.x, pos[k * 3 + 1] - tcp.y, pos[k * 3 + 2] - tcp.z] as [number, number, number] }))

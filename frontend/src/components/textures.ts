@@ -163,6 +163,51 @@ export function knitBump(repeat: [number, number] = [6, 6]) {
 const NECK_DIP = 0.243
 
 /** Colour, transparency (cut-out) and bump textures for the shirt lying flat. */
+/**
+ * Terry hand towel: soft colour with a woven band near each short end, a fine loop
+ * texture (bump) and hemmed edges. u runs end to end (along b), v near edge to far edge.
+ */
+export function towelTextures(color = '#3f7f9a', band = '#e9eef0') {
+  const { length, half } = LAUNDRY.towel
+  const PPM = 1000
+  const W = Math.round(2 * half * PPM)
+  const H = Math.round(length * PPM)
+  const r = rng(7)
+  const col = canvas(W, H)
+  const g = col.g
+  g.fillStyle = color
+  g.fillRect(0, 0, W, H)
+  // Woven bands across the towel near both ends, with thin pinstripes either side.
+  for (const x0 of [0.035, 2 * half - 0.075]) {
+    g.fillStyle = band
+    g.fillRect(x0 * PPM, 0, 0.04 * PPM, H)
+    g.fillStyle = 'rgba(255,255,255,0.55)'
+    g.fillRect((x0 - 0.008) * PPM, 0, 0.003 * PPM, H)
+    g.fillRect((x0 + 0.045) * PPM, 0, 0.003 * PPM, H)
+  }
+  // Mottled terry: light and dark specks where the loops catch the light.
+  for (let i = 0; i < 26000; i++) {
+    g.fillStyle = r() < 0.5 ? 'rgba(255,255,255,0.07)' : 'rgba(0,0,0,0.08)'
+    g.fillRect(r() * W, r() * H, 2, 2)
+  }
+  // Hemmed edges: a slightly darker rolled border all round.
+  g.strokeStyle = 'rgba(0,0,0,0.18)'
+  g.lineWidth = 0.008 * PPM
+  g.strokeRect(0.004 * PPM, 0.004 * PPM, W - 0.008 * PPM, H - 0.008 * PPM)
+  const bu = canvas(W, H)
+  bu.g.fillStyle = '#808080'
+  bu.g.fillRect(0, 0, W, H)
+  for (let i = 0; i < 60000; i++) {
+    const v = Math.floor(90 + r() * 120)
+    bu.g.fillStyle = `rgb(${v},${v},${v})`
+    bu.g.fillRect(r() * W, r() * H, 2, 2)
+  }
+  const map = tex(col.c, true)
+  const bump = tex(bu.c, false)
+  for (const t of [map, bump]) t.wrapS = t.wrapT = THREE.ClampToEdgeWrapping
+  return { map, bump }
+}
+
 export function shirtTextures(color = '#2f4a6d', trim = '#20344f') {
   const { length, sleeve } = LAUNDRY.shirt
   const PPM = 1600 // pixels per metre

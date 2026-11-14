@@ -146,6 +146,8 @@ export function doorAngleFor(u: number, s: number, a: number, y: number) {
 export const LAUNDRY = {
   table: { a0: 0.36, a1: 0.84, b0: -0.65, b1: 0.65, h: 0.74 },
   shirt: { hemA: 0.38, length: 0.28, half: 0.16, sleeve: 0.32, sleeveA0: 0.52, sleeveA1: 0.65, neck: 0.05 },
+  /** Hand towel lying flat: near edge at nearA, `length` deep (along a), 2 x half wide (along b). */
+  towel: { nearA: 0.37, length: 0.3, half: 0.23 },
   /** Folds in order: left side, right side, then bottom half up. */
   folds: [
     { point: [0, 0.746, -0.08], n: [0, 0, -1], pinch: [0.55, -0.26] },
@@ -154,8 +156,8 @@ export const LAUNDRY = {
   ] as { point: [number, number, number]; n: [number, number, number]; pinch: [number, number] }[],
 }
 export const CLOTH_Y = LAUNDRY.table.h + 0.003
-export const CLOTH_NU = 66 // cells along a (hem to collar)
-export const CLOTH_NV = 150 // cells along b (sleeve to sleeve)
+export const CLOTH_NU = 66 // cells along a (near edge to far edge)
+export const CLOTH_NV = 100 // cells along b (end to end)
 /** Radius of the rounded crease where the shirt folds over. */
 const CREASE = 0.004
 
@@ -164,8 +166,8 @@ const CREASE = 0.004
  * by a transparency texture), with texture coordinates and a few millimetres of
  * soft wrinkles so it doesn't lie perfectly flat.
  */
-export function shirtGrid() {
-  const { hemA, length, sleeve } = LAUNDRY.shirt
+export function towelGrid() {
+  const { nearA: hemA, length, half: sleeve } = LAUNDRY.towel
   const n = (CLOTH_NU + 1) * (CLOTH_NV + 1)
   const verts = new Float32Array(n * 3)
   const uv = new Float32Array(n * 2)
