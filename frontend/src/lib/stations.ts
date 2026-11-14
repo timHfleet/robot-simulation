@@ -24,15 +24,6 @@ export const DOCKS: Record<StationId, Dock> = {
 }
 /** Shoulder height used at each station. */
 export const LIFTS: Record<StationId, number> = { sort: 1.18, kitchen: 1.0, laundry: 1.05, washer: 1.15 }
-/**
- * Work surfaces the arm must stay above (station-local height and near edge).
- * The fingertips may go down to an item; the elbow, wrist and palm may not.
- */
-export const SURFACES: Partial<Record<StationId, { y: number; a: number }>> = {
-  sort: { y: 0.72, a: 0.36 },
-  laundry: { y: 0.74, a: 0.36 },
-  washer: { y: 0.76, a: 0.4 },
-}
 export const STATION_NAMES: Record<StationId, string> = {
   sort: 'sorting table',
   kitchen: 'kitchen',
@@ -266,9 +257,9 @@ export const WASHER = {
   basketWall: 0.13,
   clothes: [
     { a: 0.47, b: -0.45, color: '#2563eb' },
-    { a: 0.56, b: -0.58, color: '#f59e0b' },
+    { a: 0.53, b: -0.58, color: '#f59e0b' },
     { a: 0.47, b: -0.58, color: '#16a34a' },
-    { a: 0.56, b: -0.45, color: '#db2777' },
+    { a: 0.53, b: -0.45, color: '#db2777' },
   ],
   /** Where clothes settle inside the drum (drum-local). */
   drumRest: [
@@ -370,4 +361,29 @@ export function furnitureRects() {
     }
   }
   return rects
+}
+
+/**
+ * Obstacles the arm must stay above at each station (station-local footprint and top).
+ * `hand: true` keeps the wrist and palm out too (tables, the sorting tubs); `false`
+ * only the elbow and forearm (the basket and machine the hand works in or at).
+ */
+export const KEEP_OUT: Record<StationId, { a0: number; a1: number; b0: number; b1: number; y: number; hand: boolean }[]> = {
+  sort: [
+    { a0: SORT.table.a0, a1: SORT.table.a1, b0: SORT.table.b0, b1: SORT.table.b1, y: SORT.table.h, hand: true },
+    ...SORT.bins.map((bin) => ({
+      a0: bin.a - SORT.binSize / 2 - 0.006,
+      a1: bin.a + SORT.binSize / 2 + 0.006,
+      b0: bin.b - SORT.binSize / 2 - 0.006,
+      b1: bin.b + SORT.binSize / 2 + 0.006,
+      y: SORT.table.h + SORT.binWall + 0.004,
+      hand: true,
+    })),
+  ],
+  laundry: [{ a0: LAUNDRY.table.a0, a1: LAUNDRY.table.a1, b0: LAUNDRY.table.b0, b1: LAUNDRY.table.b1, y: LAUNDRY.table.h, hand: true }],
+  washer: [
+    { a0: WASHER.stand.a0, a1: WASHER.stand.a1, b0: WASHER.stand.b0, b1: WASHER.stand.b1, y: WASHER.stand.top + WASHER.basketWall + 0.008, hand: false },
+    { a0: WASHER.body.a0, a1: WASHER.body.a1, b0: WASHER.body.b0, b1: WASHER.body.b1, y: WASHER.body.top, hand: false },
+  ],
+  kitchen: KITCHEN.counters.map((c) => ({ a0: c.a0, a1: c.a1, b0: c.b0, b1: c.b1, y: KITCHEN.counterH, hand: false })),
 }

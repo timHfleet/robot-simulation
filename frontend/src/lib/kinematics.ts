@@ -231,8 +231,8 @@ export function solveIK(
     close?: THREE.Vector3 | null
     rest: number[]
     maxIters?: number
-    /** Keep the elbow, wrist and palm above height y wherever they are beyond x (a table in front). */
-    keepAbove?: KeepAbove | null
+    /** Obstacles (table, tubs, basket...) the arm must stay above. */
+    keepOut?: KeepOut[] | null
     /** Only start from q0 (and the rest pose if that fails): for small steps along a path, so the arm never flips. */
     local?: boolean
   },
@@ -249,7 +249,7 @@ export function solveIK(
   let rng = 12345
   const rand = () => ((rng = (rng * 1103515245 + 12345) % 2147483648) / 2147483648)
   if (!opts.local) for (let k = 0; k < 6; k++) seeds.push(limitsRad.map(([lo, hi]) => lo + (0.15 + 0.7 * rand()) * (hi - lo)))
-  const ka = opts.keepAbove ?? null
+  const ka = opts.keepOut ?? null
   // How far a solution is from where the arm is now: prefer the nearest, so the arm
   // never swings through a big detour to reach a nearby target.
   const dist = (q: number[]) => q.reduce((s, v, i) => s + (v - q0[i]) ** 2, 0)
@@ -282,10 +282,19 @@ export function solveIK(
   return { q: b.q, posErr: b.posErr, dirErr: dirT ? b.dirErr : 0, iters, ms: performance.now() - t0, reached: ok(b) }
 }
 
-/** A horizontal surface the arm must stay above (robot frame): height y, starting at x. */
-export interface KeepAbove {
+/**
+ * An obstacle the arm must stay above (robot frame): a footprint x0..x1, z0..z1 and a
+ * top height y. `hand` also keeps the wrist and palm out (a table or a tub the hand
+ * reaches over); without it only the elbow and forearm are kept out (a basket or a
+ * machine the hand has to work inside or at the edge of).
+ */
+export interface KeepOut {
+  x0: number
+  x1: number
+  z0: number
+  z1: number
   y: number
-  x: number
+  hand: boolean
 }
 
 /** Distance from the shoulder-roll joint to the fingertips with the arm straight. */
@@ -307,7 +316,7 @@ function dlsAttempt(
   closeT: THREE.Vector3 | null,
   rest: number[],
   maxIters: number,
-  keepAbove: KeepAbove | null = null,
+  keepOut: KeepOut[] | null = null,
 ): Attempt {
   const lambda = 0.03
   const wDir = 0.3
@@ -364,26 +373,46 @@ function dlsAttempt(
       }
       J.push(...rows)
     }
-    // Keep the arm off the work surface: the elbow, forearm, wrist joints and palm get
-    // a "push up" row (only while too low) so the solver lifts them clear.
+    // Keep the arm off obstacles: points along the upper arm, elbow, forearm, wrist and
+    // palm get a "push up" row (only while too low over an obstacle) so the solver
+    // lifts them clear. Each point lists how many joints move it.
     let violated = false
-    if (keepAbove) {
+    if (keepOut && keepOut.length) {
       const palm = new THREE.Vector3(0, -0.06, 0).applyMatrix4(f.frames[6])
-      const pts: [THREE.Vector3, number][] = [
-        [f.origins[3], 3],
-        [f.origins[4], 4],
-        [f.origins[5], 5],
-        [f.origins[6], 6],
-        [palm, 7],
+      const pts: [THREE.Vector3, number, boolean][] = [
+        [f.origins[2].clone().lerp(f.origins[3], 0.5), 3, false],
+        [f.origins[3], 3, false],
+        [f.origins[4], 4, false],
+        [f.origins[4].clone().lerp(f.origins[5], 0.5), 5, false],
+        [f.origins[5], 5, false],
+        [f.origins[6], 6, true],
+        [palm, 7, true],
       ]
-      const minY = keepAbove.y + 0.035
-      for (const [pt, n] of pts) {
-        if (pt.x < keepAbove.x - 0.05 || pt.y >= minY) continue
+      for (const [pt, n, hand] of pts) {
+        // The cheapest way out of any box this point is inside: up over its top, or
+        // sideways past one of its edges (e.g. the elbow just off a counter's edge).
+        let best: { dir: THREE.Vector3; d: number } | null = null
+        for (const b of keepOut) {
+          if (hand && !b.hand) continue
+          const m = 0.02
+          const top = b.y + 0.035
+          if (pt.x < b.x0 - m || pt.x > b.x1 + m || pt.z < b.z0 - m || pt.z > b.z1 + m || pt.y >= top) continue
+          const opts: [THREE.Vector3, number][] = [
+            [new THREE.Vector3(0, 1, 0), top - pt.y],
+            [new THREE.Vector3(-1, 0, 0), pt.x - (b.x0 - m)],
+            [new THREE.Vector3(1, 0, 0), b.x1 + m - pt.x],
+            [new THREE.Vector3(0, 0, -1), pt.z - (b.z0 - m)],
+            [new THREE.Vector3(0, 0, 1), b.z1 + m - pt.z],
+          ]
+          const [dir, d] = opts.reduce((x, y) => (y[1] < x[1] ? y : x))
+          if (!best || d > best.d) best = { dir, d }
+        }
+        if (!best) continue
         violated = true
         const row = new Array(DOF).fill(0)
-        for (let i = 0; i < n; i++) row[i] = new THREE.Vector3().crossVectors(f.axes[i], new THREE.Vector3().subVectors(pt, f.origins[i])).y
+        for (let i = 0; i < n; i++) row[i] = new THREE.Vector3().crossVectors(f.axes[i], new THREE.Vector3().subVectors(pt, f.origins[i])).dot(best.dir)
         J.push(row)
-        e.push(minY - pt.y)
+        e.push(best.d + 0.005)
       }
     }
     if (!violated && posErr < 2e-4 && (!dirT || dirErr < 2e-3)) break

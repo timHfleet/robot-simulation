@@ -9,7 +9,8 @@
  * same steps.
  */
 import * as THREE from 'three'
-import { WAIST_X, fk, solveIK, torsoBase, waistFor, type IKResult, type KeepAbove, type Side } from './kinematics'
+import { WAIST_X, fk, solveIK, torsoBase, waistFor, type IKResult, type KeepOut, type Side } from './kinematics'
+import { KEEP_OUT, toWorld, type StationId } from './stations'
 import type { ArmGoal, Target } from './tasks'
 
 export interface HandGoal {
@@ -43,7 +44,7 @@ export function handPath(
   w1: number,
   goal: HandGoal,
   steps: number,
-  opts: { rest: number[]; keepAbove?: KeepAbove | null },
+  opts: { rest: number[]; keepOut?: KeepOut[] | null },
 ): { qs: number[][]; res: IKResult } {
   const s = startPose(side, q0, lift, w0)
   // The gripper is symmetric: closing along c or -c is the same grasp.
@@ -64,7 +65,7 @@ export function handPath(
       const p = last ? goal.pos : s.p.clone().lerp(goal.pos, t)
       const d = last ? goal.dir : s.d.clone().lerp(goal.dir, t).normalize()
       const c = goal.close ? (last ? goal.close : c0.clone().lerp(goal.close, t).normalize()) : null
-      res = solveIK(side, q, torsoBase(lift, w0 + (w1 - w0) * t), p, { dir: d, close: c, rest: q, keepAbove: opts.keepAbove, local: true })
+      res = solveIK(side, q, torsoBase(lift, w0 + (w1 - w0) * t), p, { dir: d, close: c, rest: q, keepOut: opts.keepOut, local: true })
       q = res.q
       qs.push(q)
     }
@@ -74,7 +75,7 @@ export function handPath(
   if (close(first.res)) return first
   // No smooth way along the line: find a pose that reaches the goal and blend every
   // joint toward it over the whole move, rather than snapping at the end.
-  const wide = solveIK(side, q0, torsoBase(lift, w1), goal.pos, { dir: goal.dir, close: goal.close, rest: opts.rest, keepAbove: opts.keepAbove })
+  const wide = solveIK(side, q0, torsoBase(lift, w1), goal.pos, { dir: goal.dir, close: goal.close, rest: opts.rest, keepOut: opts.keepOut })
   if (!wide.reached && wide.posErr >= first.res.posErr) return first
   const qs = Array.from({ length: steps }, (_, k) => q0.map((v, i) => v + ((wide.q[i] - v) * (k + 1)) / steps))
   return { qs, res: wide }
@@ -118,4 +119,15 @@ export function waistForMove(arms: Partial<Record<Side, ArmGoal>>, robot: RobotP
   if (work.length) return waistFor(work)
   if (Array.isArray(arms.L) && Array.isArray(arms.R)) return 0
   return current
+}
+
+/** A station's obstacles in the robot frame, for where the robot stands now. */
+export function keepOutsFor(station: StationId, robot: RobotPose): KeepOut[] {
+  const toRobot = (a: number, b: number) =>
+    toWorld(station, a, 0, b).sub(new THREE.Vector3(robot.x, 0, robot.z)).applyAxisAngle(Y, -robot.yaw)
+  return KEEP_OUT[station].map((o) => {
+    const p = toRobot(o.a0, o.b0)
+    const q = toRobot(o.a1, o.b1)
+    return { x0: Math.min(p.x, q.x), x1: Math.max(p.x, q.x), z0: Math.min(p.z, q.z), z1: Math.max(p.z, q.z), y: o.y, hand: o.hand }
+  })
 }

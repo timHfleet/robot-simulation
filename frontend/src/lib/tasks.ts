@@ -4,7 +4,7 @@
  * which the runner in Humanoid.tsx then executes one by one.
  */
 import * as THREE from 'three'
-import type { Side } from './kinematics'
+import { fk, torsoBase, type Side } from './kinematics'
 import { rad } from './math'
 import {
   KITCHEN,
@@ -79,6 +79,11 @@ export const REST_Q = [0, 8, 0, 15, 0, 0, 0].map(rad)
  */
 export const TUCK_Q = [15, 8, 0, 125, 0, -130, 0].map(rad)
 /** The same ready pose as a hand target, so getting there is a smooth straight-line move. */
+/** Where the hand is when the arm hangs (REST_Q), relative to the shoulders, as a hand target. */
+export const hang = (side: Side): Target => {
+  const f = fk(side, REST_Q, torsoBase(0, 0))
+  return { frame: 'torso', pos: f.tcp, approach: f.dir, keepWaist: true }
+}
 export const tuck = (side: Side): Target => ({
   frame: 'torso',
   pos: new THREE.Vector3(0.29, -0.25, side === 'L' ? -0.31 : 0.31),
@@ -150,11 +155,13 @@ function placeFromAbove(
   rel: { container: string; pos: [number, number, number]; yaw: number; where: string },
   clear = 0.15,
   maxTilt = 55,
+  /** How high above its resting place the item is let go (it drops the rest of the way). */
+  release = 0.012,
 ): Act[] {
   const at = (p: THREE.Vector3) => T(p, downish(st, side, p, maxTilt), close)
   return [
     { k: 'move', arms: { [side]: at(up(tcp, clear)) } },
-    { k: 'move', arms: { [side]: at(up(tcp, 0.012)) }, slow: true },
+    { k: 'move', arms: { [side]: at(up(tcp, release)) }, slow: true },
     { k: 'grip', side, g: open },
     { k: 'release', side, item: id, ...rel },
     { k: 'move', arms: { [side]: at(up(tcp, clear)) }, via: true },
@@ -192,7 +199,10 @@ function planSort(ctx: PlanCtx): Act[] {
     const slot = toWorld(st, ...slotLocal)
     acts.push({ k: 'say', text: `${color[0].toUpperCase() + color.slice(1)} block` })
     acts.push({ k: 'move', arms: { [other(placer)]: tuck(other(placer)) } }, ...pickFromAbove(st, placer, id, pos, close, SORT.block))
-    acts.push(...placeFromAbove(st, placer, id, slot, undefined, gripFor(SORT.block) + 0.3, { container: st, pos: slotLocal, yaw: 0, where: `bin:${color}` }, 0.12))
+    // Let go with the fingertips just above the tub rim: the block drops in, and the hand
+    // never dips into a tub where it could catch the rim.
+    const rimClear = SORT.binWall + 0.004 + 0.03 - SORT.block / 2
+    acts.push(...placeFromAbove(st, placer, id, slot, undefined, gripFor(SORT.block) + 0.3, { container: st, pos: slotLocal, yaw: 0, where: `bin:${color}` }, rimClear + 0.09, 55, rimClear))
   }
   acts.push(tuckHands(), { k: 'say', text: 'All blocks sorted' })
   return acts
@@ -478,8 +488,57 @@ function planWash(ctx: PlanCtx): Act[] {
 }
 
 export function planTask(id: TaskId, ctx: PlanCtx, opts: { foldsDone: boolean }): Act[] {
-  if (id === 'sort') return planSort(ctx)
-  if (id === 'dishes') return planDishes(ctx)
-  if (id === 'fold') return planFold(opts.foldsDone)
-  return planWash(ctx)
+  const acts = id === 'sort' ? planSort(ctx) : id === 'dishes' ? planDishes(ctx) : id === 'fold' ? planFold(opts.foldsDone) : planWash(ctx)
+  // With the dishwasher door open a hanging arm would pass through it, so there the
+  // free arm stays tucked until the end.
+  return hangIdleArms(acts, id !== 'dishes')
 }
+
+const isTuck = (g: ArmGoal | undefined) => !!g && (g === TUCK_Q || (!Array.isArray(g) && !!g.keepWaist))
+
+/**
+ * Arms that aren't working hang straight down at the sides, like a person's. Each
+ * "park" in a plan (moving an arm to the ready pose) becomes: lift the hand clear of
+ * the table to the ready pose, then lower the arm to hang. An arm that is already
+ * hanging isn't moved again. `during`: also do this between items, not just at the
+ * start and end.
+ */
+function hangIdleArms(acts: Act[], during: boolean): Act[] {
+  const out: Act[] = []
+  const hanging: Record<Side, boolean> = { L: false, R: false }
+  const lastPark = acts.reduce((n, a, i) => (a.k === 'move' && SIDES.some((s) => isTuck(a.arms[s])) ? i : n), -1)
+  const moveOf = (sides: Side[], goal: (s: Side) => ArmGoal): Act => ({ k: 'move', arms: Object.fromEntries(sides.map((s) => [s, goal(s)])) })
+  acts.forEach((a, i) => {
+    if (a.k !== 'move') return void out.push(a)
+    const parks = SIDES.filter((s) => isTuck(a.arms[s]))
+    const first = !out.some((x) => x.k === 'drive')
+    if (parks.length && first) {
+      // Before driving off: just let the arms hang (away from any table).
+      out.push(moveOf(parks, () => REST_Q))
+      for (const s of parks) hanging[s] = true
+      return
+    }
+    if (parks.length && (during || i === lastPark)) {
+      // Park: lift the hand clear to the ready pose, then lower it straight down and
+      // back to hang (bending the elbow open in one swing would arc the hand forward
+      // through the table edge).
+      const lift = parks.filter((s) => !hanging[s])
+      if (lift.length) {
+        out.push(moveOf(lift, tuck))
+        out.push(moveOf(lift, hang))
+      }
+      for (const s of parks) hanging[s] = true
+      const others = SIDES.filter((s) => a.arms[s] && !parks.includes(s))
+      if (others.length) out.push({ ...a, arms: Object.fromEntries(others.map((s) => [s, a.arms[s]!])) })
+      return
+    }
+    // Work: a hanging arm first comes up to the ready pose (straight up beside the
+    // body), so it never sweeps up through the table edge.
+    const unhang = SIDES.filter((s) => a.arms[s] && hanging[s] && !isTuck(a.arms[s]))
+    if (unhang.length) out.push(moveOf(unhang, tuck))
+    for (const s of SIDES) if (a.arms[s]) hanging[s] = false
+    out.push(a)
+  })
+  return out
+}
+const SIDES: Side[] = ['L', 'R']

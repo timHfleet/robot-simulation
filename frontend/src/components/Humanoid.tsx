@@ -29,8 +29,8 @@ import {
   type V3,
 } from '../lib/kinematics'
 import { Button, Card, Segmented, Slider, Stat } from './ui'
-import { DOCKS, ITEMS, KITCHEN, STAGING, SURFACES, doorAngleFor, foldAngleFor, furnitureRects, lidAngleFor, toLocal, type StationId } from '../lib/stations'
-import { handPath, pathSteps, toRobotGoal, waistForMove, type HandGoal } from '../lib/motion'
+import { DOCKS, ITEMS, KITCHEN, STAGING, doorAngleFor, foldAngleFor, furnitureRects, lidAngleFor, toLocal, type StationId } from '../lib/stations'
+import { handPath, keepOutsFor, pathSteps, toRobotGoal, waistForMove, type HandGoal } from '../lib/motion'
 import { TASKS, planTask, type Act, type Mechanism, type PlanCtx, type TaskId } from '../lib/tasks'
 import { buildStations, type Mech, type Stations } from './stationProps'
 
@@ -733,7 +733,8 @@ export default function Humanoid() {
     autoHead: true,
     pan: 0,
     tilt: 0,
-    arms: { L: [...REST], R: [...REST] },
+    // Idle: arms hanging straight down at the sides.
+    arms: { L: [...PRESETS[1].q], R: [...PRESETS[1].q] },
     grip: { L: 0.6, R: 0.6 },
     armMode: 'joint',
     armSel: 'both',
@@ -979,8 +980,8 @@ export default function Humanoid() {
           // The waist turns so the working shoulder(s) are a comfortable distance from their targets.
           const w1 = waistForMove(a.arms, robot, lift, w0)
           const station = TASKS.find((x) => x.id === sim.task!.id)!.station
-          const surf = SURFACES[station]
-          const keepAbove = surf ? { y: surf.y, x: surf.a - toLocal(station, new THREE.Vector3(sim.x, 0, sim.z)).x } : null
+          // Tables, tubs, the basket and machines the arm must stay above, where the robot stands now.
+          const keepOut = keepOutsFor(station, robot)
           const goals: Partial<Record<Side, HandGoal>> = {}
           for (const side of SIDES) {
             const g = a.arms[side]
@@ -999,7 +1000,7 @@ export default function Humanoid() {
             }
             // The hand travels in a straight line in small steps, each solved from the last,
             // keeping the elbow, wrist and palm above the work surface.
-            const r = handPath(side, sim.qT[side], lift, w0, w1, goals[side]!, K, { rest: REST, keepAbove })
+            const r = handPath(side, sim.qT[side], lift, w0, w1, goals[side]!, K, { rest: REST, keepOut })
             qs[side] = r.qs
             sim.ik[side] = r.res
             if (g.frame !== 'torso') sim.look = g.pos.clone()
