@@ -1111,11 +1111,15 @@ export default function Humanoid() {
           const tcp = toLocal('laundry', tcpWorld(a.side))
           if (import.meta.env.DEV)
             console.debug(`[clothGrab] ${a.side} ${a.feature}: hand ${tcp.toArray().map((v) => v.toFixed(3))}, point ${cloth.feature(a.feature as Feature).toArray().map((v) => v.toFixed(3))}, q ${sim.q[a.side].map((v) => Math.round(deg(v)))}`)
-          if (!cloth.grabFeature(a.side, a.feature as Feature, tcp, a.stack)) say(`Missed the shirt: the ${a.side === 'L' ? 'left' : 'right'} hand couldn't reach it`)
+          const caught = a.feature === 'nearest' ? cloth.grabAt(a.side, tcp) : cloth.grabFeature(a.side, a.feature as Feature, tcp, a.stack)
+          if (!caught) say(`Missed the shirt: the ${a.side === 'L' ? 'left' : 'right'} hand couldn't reach it`)
           break
         }
         case 'clothRelease':
           cloth.release(a.side)
+          break
+        case 'clothSweep':
+          cloth.sweep(a.side, a.on)
           break
         case 'wait':
           sim.waitUntil = sim.time + a.t

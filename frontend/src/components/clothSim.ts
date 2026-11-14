@@ -35,8 +35,10 @@ const PINCH_R = 0.045
 const REACH = 0.09
 /** A named-point grasp catches the cloth only if the fingertips are this close to it. */
 const GRASP_TOL = 0.04
+/** Radius of cloth a smoothing hand carries along (fingertips and the pads between them). */
+const SWEEP_R = 0.035
 /** A stack grasp holds every layer within this distance of the point (the width of the gripper's hold on an edge). */
-const STACK_R = 0.035
+const STACK_R = 0.03
 
 export interface ClothParts {
   mesh: THREE.Mesh
@@ -73,6 +75,13 @@ export interface Cloth {
   pinch(side: 'L' | 'R', tcp: THREE.Vector3): number
   /** Let go. */
   release(side: 'L' | 'R'): void
+  /** Pinch whatever cloth is nearest the fingertips (within reach), through every layer there. */
+  grabAt(side: 'L' | 'R', tcp: THREE.Vector3): number
+  /**
+   * Smoothing: while on, the hand's fingertips press on the cloth and slide it along with
+   * the hand (cloth further away is held by the table), which pulls out wrinkles.
+   */
+  sweep(side: 'L' | 'R', on: boolean): void
   /** Put the shirt back: flat, or (by default) dropped in a crumpled heap, different each time. */
   reset(crumpled?: boolean): void
   /** Station-local position of a named point on the shirt (shoulders, sleeves, hem, collar). */
@@ -169,8 +178,8 @@ export function createCloth(parts: ClothParts): Cloth {
       link(r, c, r + 1, c - 1, 0.6)
       // Bending: keeps the cloth from crumpling when it's pulled, but never pushes a fold
       // back open (cloth lies folded flat without springing back).
-      link(r, c, r, c + 2, 0.3, 0)
-      link(r, c, r + 2, c, 0.3, 0)
+      link(r, c, r, c + 2, 0.3, 0.12)
+      link(r, c, r + 2, c, 0.3, 0.12)
     }
   const A = Int32Array.from(ca)
   const B = Int32Array.from(cb)
@@ -182,6 +191,9 @@ export function createCloth(parts: ClothParts): Cloth {
   let acc = 0
   let still = 0
   const lastHands: Partial<Record<'L' | 'R', THREE.Vector3>> = {}
+  const sweeping = { L: false, R: false }
+  const lastSweep: Partial<Record<'L' | 'R', THREE.Vector3>> = {}
+  const _h2 = new THREE.Vector3()
   const _h = new THREE.Vector3()
   let asleep = false
 
@@ -392,9 +404,30 @@ export function createCloth(parts: ClothParts): Cloth {
       for (let k = 0; k < N; k++) if (active[k]) collideTable(k)
     }
     selfCollide()
+    for (let k = 0; k < N; k++) if (active[k]) collideTable(k)
+    // Smoothing hands: everything under the fingertips moves with the hand.
+    for (const side of ['L', 'R'] as const) {
+      const cur = hands[side]
+      if (!sweeping[side] || !cur) continue
+      const hp = _h2.lerpVectors(lastHands[side] ?? cur, cur, t)
+      const last = lastSweep[side] ?? hp.clone()
+      const dx = hp.x - last.x
+      const dz = hp.z - last.z
+      lastSweep[side] = hp.clone()
+      for (let k = 0; k < N; k++) {
+        if (!inv[k]) continue
+        const ex = pos[k * 3] - hp.x
+        const ez = pos[k * 3 + 2] - hp.z
+        if (ex * ex + ez * ez > SWEEP_R * SWEEP_R || pos[k * 3 + 1] > hp.y + 0.004) continue
+        pos[k * 3] += dx
+        pos[k * 3 + 2] += dz
+        prev[k * 3] = pos[k * 3]
+        prev[k * 3 + 1] = pos[k * 3 + 1]
+        prev[k * 3 + 2] = pos[k * 3 + 2]
+      }
+    }
     for (let k = 0; k < N; k++) {
       if (!active[k]) continue
-      collideTable(k)
       const i = k * 3
       moved = Math.max(moved, Math.abs(pos[i] - prev[i]) + Math.abs(pos[i + 1] - prev[i + 1]) + Math.abs(pos[i + 2] - prev[i + 2]))
     }
@@ -429,7 +462,7 @@ export function createCloth(parts: ClothParts): Cloth {
 
   return {
     step: (dt, hands) => {
-      const held = pins.L.length + pins.R.length > 0
+      const held = pins.L.length + pins.R.length > 0 || sweeping.L || sweeping.R
       if (asleep && !held) {
         for (const side of ['L', 'R'] as const) if (hands[side]) lastHands[side] = hands[side]!.clone()
         return
@@ -486,6 +519,36 @@ export function createCloth(parts: ClothParts): Cloth {
       still = 0
       if (import.meta.env.DEV) console.debug(`[cloth] ${side} pinch at ${tcp.toArray().map((v) => v.toFixed(3))}: ${pins[side].length} particles`)
       return pins[side].length
+    },
+    grabAt: (side, tcp) => {
+      for (const p of pins[side]) inv[p.k] = 1
+      pins[side] = []
+      let k0 = -1
+      let bd = GRASP_TOL
+      for (let k = 0; k < N; k++) {
+        if (!active[k]) continue
+        const d = Math.hypot(pos[k * 3] - tcp.x, pos[k * 3 + 1] - tcp.y, pos[k * 3 + 2] - tcp.z)
+        if (d < bd) {
+          bd = d
+          k0 = k
+        }
+      }
+      if (k0 < 0) return 0
+      for (let k = 0; k < N; k++) {
+        if (!active[k]) continue
+        if (Math.hypot(pos[k * 3] - pos[k0 * 3], pos[k * 3 + 2] - pos[k0 * 3 + 2]) < STACK_R && Math.abs(pos[k * 3 + 1] - pos[k0 * 3 + 1]) < 0.04)
+          pins[side].push({ k, off: [pos[k * 3] - tcp.x, pos[k * 3 + 1] - tcp.y, pos[k * 3 + 2] - tcp.z] })
+      }
+      for (const p of pins[side]) inv[p.k] = 0
+      asleep = false
+      still = 0
+      return pins[side].length
+    },
+    sweep: (side, on) => {
+      sweeping[side] = on
+      delete lastSweep[side]
+      asleep = false
+      still = 0
     },
     release: (side) => {
       for (const p of pins[side]) inv[p.k] = 1
