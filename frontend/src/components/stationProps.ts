@@ -5,6 +5,7 @@
  */
 import * as THREE from 'three'
 import { RoundedBoxGeometry } from 'three/examples/jsm/geometries/RoundedBoxGeometry.js'
+import { knitBump, shirtTextures, stoneTexture, wickerTextures, woodTexture } from './textures'
 import {
   CLOTH_NU,
   CLOTH_NV,
@@ -68,17 +69,18 @@ function slab(a0: number, a1: number, y0: number, y1: number, b0: number, b1: nu
   return shadowed(mesh)
 }
 
+const WICKER = wickerTextures()
 const M = {
-  wood: mat('#b08158', { roughness: 0.75 }),
-  woodDark: mat('#7c5a3c', { roughness: 0.8 }),
-  counter: mat('#e5e7eb', { roughness: 0.35 }),
+  wood: mat('#ffffff', { map: woodTexture([1, 1]), roughness: 0.55, metalness: 0 }),
+  woodDark: mat('#ffffff', { map: woodTexture([1, 3], '#7a5434'), roughness: 0.7, metalness: 0 }),
+  counter: mat('#ffffff', { map: stoneTexture([2, 1]), roughness: 0.28, metalness: 0 }),
   cabinet: mat('#475569', { roughness: 0.55 }),
   steel: mat('#c8ced6', { metalness: 0.8, roughness: 0.3 }),
   steelDark: mat('#8b939e', { metalness: 0.8, roughness: 0.35 }),
   wire: mat('#d1d5db', { metalness: 0.6, roughness: 0.35 }),
   black: mat('#1f2328', { roughness: 0.5 }),
   white: mat('#f3f4f6', { roughness: 0.4 }),
-  wicker: mat('#b7864b', { roughness: 0.9 }),
+  wicker: mat('#ffffff', { map: WICKER.map, bumpMap: WICKER.bump, bumpScale: 2.5, roughness: 0.85, metalness: 0 }),
   glass: new THREE.MeshPhysicalMaterial({ color: '#9fb4c8', transparent: true, opacity: 0.35, roughness: 0.05, metalness: 0, transmission: 0 }),
   drum: mat('#aab2bd', { metalness: 0.9, roughness: 0.25, side: THREE.DoubleSide }),
 }
@@ -94,51 +96,121 @@ function table(a0: number, a1: number, b0: number, b1: number, h: number, top: T
 // ---------------------------------------------------------------------------
 // Items
 // ---------------------------------------------------------------------------
+/** Glossy glazed ceramic. */
+const ceramic = (color: string) =>
+  new THREE.MeshPhysicalMaterial({ color, roughness: 0.18, metalness: 0, clearcoat: 1, clearcoatRoughness: 0.08, side: THREE.DoubleSide })
+
+/** A lathe profile from (radius, height) points, smoothed. */
+const lathe = (pts: [number, number][], segs = 48) => new THREE.LatheGeometry(pts.map(([r, y]) => new THREE.Vector2(r, y)), segs)
+
 function makeItem(def: ItemDef): THREE.Object3D {
   if (def.kind === 'block') {
-    const m = new THREE.Mesh(new RoundedBoxGeometry(SORT.block, SORT.block, SORT.block, 2, 0.004), mat(COLORS[def.color] ?? def.color, { roughness: 0.45 }))
+    // A painted wooden toy block: slightly rounded edges, satin paint over grain.
+    const m = new THREE.Mesh(
+      new RoundedBoxGeometry(SORT.block, SORT.block, SORT.block, 3, 0.005),
+      new THREE.MeshPhysicalMaterial({ color: COLORS[def.color] ?? def.color, roughness: 0.42, clearcoat: 0.4, clearcoatRoughness: 0.4, bumpMap: woodTexture([1, 1]), bumpScale: 0.6 }),
+    )
     return shadowed(m)
   }
   if (def.kind === 'plate') {
+    // Dinner plate turned on a lathe: foot ring, flat well, sloped rim. Its axis is local z.
+    const { r } = KITCHEN.plate
+    const k = r / 0.1
+    const prof: [number, number][] = [
+      [0.001, 0.0035],
+      [0.046, 0.0035],
+      [0.05, 0.0],
+      [0.056, 0.0],
+      [0.06, 0.0035],
+      [0.074, 0.006],
+      [0.09, 0.0115],
+      [0.0985, 0.0145],
+      [0.1, 0.0158],
+      [0.0985, 0.0172],
+      [0.09, 0.0145],
+      [0.074, 0.0092],
+      [0.06, 0.0074],
+      [0.001, 0.0074],
+    ]
+    const geo = lathe(prof.map(([x, y]) => [x * k, y - 0.0085] as [number, number]), 64)
+    geo.rotateX(Math.PI / 2)
+    const plate = new THREE.Mesh(geo, ceramic('#f7f5f0'))
+    const band = new THREE.Mesh(new THREE.TorusGeometry(0.092 * k, 0.0012, 6, 64), ceramic('#2f6fb0'))
+    band.position.z = 0.0045
     const g = new THREE.Group()
-    const { r, t } = KITCHEN.plate
-    const disc = new THREE.Mesh(new THREE.CylinderGeometry(r, r * 0.92, t, 40), mat('#f8fafc', { roughness: 0.25 }))
-    disc.rotation.x = Math.PI / 2 // face along local z
-    const rim = new THREE.Mesh(new THREE.TorusGeometry(r - 0.006, 0.004, 8, 40), mat('#38bdf8', { roughness: 0.3 }))
-    g.add(disc, rim)
+    g.add(plate, band)
     return shadowed(g)
   }
   if (def.kind === 'cup') {
-    // Standing mouth-down: the closed base is on top.
-    const g = new THREE.Group()
+    // A mug standing mouth-down: lathe-turned walls with a rounded lip, base on top, and a handle.
     const { r, h } = KITCHEN.cup
-    const m = mat(def.color, { roughness: 0.35, side: THREE.DoubleSide })
-    const body = new THREE.Mesh(new THREE.CylinderGeometry(r * 0.88, r, h, 28, 1, true), m)
-    const base = new THREE.Mesh(new THREE.CircleGeometry(r * 0.88, 28), m)
-    base.rotation.x = -Math.PI / 2
-    base.position.y = h / 2
-    const handle = new THREE.Mesh(new THREE.TorusGeometry(0.02, 0.005, 8, 20, Math.PI), m)
-    handle.rotation.z = Math.PI / 2
-    handle.position.set(0, 0, -r)
+    const prof: [number, number][] = [
+      [0.001, -h / 2],
+      [r * 0.86, -h / 2],
+      [r * 0.92, -h / 2 + 0.003],
+      [r, h / 2 - 0.004],
+      [r * 0.995, h / 2 - 0.0005],
+      [r * 0.95, h / 2],
+      [r * 0.905, h / 2 - 0.002],
+      [r * 0.87, -h / 2 + 0.008],
+      [0.001, -h / 2 + 0.008],
+    ]
+    const geo = lathe(prof, 48)
+    geo.rotateX(Math.PI) // mouth down
+    const m = ceramic(def.color)
+    const body = new THREE.Mesh(geo, m)
+    const handle = new THREE.Mesh(new THREE.TorusGeometry(0.021, 0.0055, 12, 28, Math.PI * 1.1), m)
     handle.rotation.y = Math.PI / 2
-    g.add(body, base, handle)
+    handle.rotation.x = Math.PI / 2 - 0.15
+    handle.position.set(0, -0.002, -r - 0.012)
+    const g = new THREE.Group()
+    g.add(body, handle)
     return shadowed(g)
   }
-  // Clothes: a soft, lumpy bundle.
-  const geo = new THREE.IcosahedronGeometry(0.05, 3)
+  // Clothes: a folded garment, soft and slightly rumpled, with a knit texture.
+  const seed = def.id.charCodeAt(def.id.length - 1)
+  const geo = new RoundedBoxGeometry(0.13, 0.026, 0.1, 5, 0.011)
   const p = geo.getAttribute('position') as THREE.BufferAttribute
-  const v = new THREE.Vector3()
-  const seed = def.id.length * 7 + def.color.charCodeAt(2)
   for (let i = 0; i < p.count; i++) {
-    v.fromBufferAttribute(p, i)
-    const n = 1 + 0.14 * Math.sin(v.x * 60 + seed) * Math.cos(v.z * 50 + seed * 0.3) + 0.08 * Math.sin(v.y * 90 + seed)
-    v.multiplyScalar(n)
-    p.setXYZ(i, v.x, v.y, v.z)
+    const x = p.getX(i)
+    const y = p.getY(i)
+    const z = p.getZ(i)
+    const bulge = 0.004 * Math.cos(x * 20) * Math.cos(z * 26) // softer, puffier middle
+    const rumple = 0.0025 * Math.sin(x * 70 + seed) * Math.sin(z * 60 + seed * 0.7)
+    p.setY(i, y + (y > 0 ? bulge + rumple : -0.3 * bulge))
+    p.setX(i, x + 0.002 * Math.sin(z * 40 + seed))
   }
   geo.computeVertexNormals()
-  const m = new THREE.Mesh(geo, mat(def.color, { roughness: 0.95 }))
-  m.scale.set(1.15, 0.42, 0.9)
-  return shadowed(m)
+  const m = new THREE.Mesh(
+    geo,
+    new THREE.MeshPhysicalMaterial({ color: def.color, roughness: 0.95, sheen: 0.3, sheenRoughness: 0.8, sheenColor: new THREE.Color(def.color).lerp(new THREE.Color('#ffffff'), 0.2), envMapIntensity: 0.4, bumpMap: knitBump([3, 3]), bumpScale: 1.2 }),
+  )
+  // A visible fold line across the top.
+  const crease = new THREE.Mesh(new THREE.BoxGeometry(0.128, 0.0015, 0.004), new THREE.MeshStandardMaterial({ color: new THREE.Color(def.color).multiplyScalar(0.7), roughness: 1 }))
+  crease.position.set(0, 0.0135, 0.01)
+  const g = new THREE.Group()
+  g.add(m, crease)
+  return shadowed(g)
+}
+
+/** A square plastic storage tub: tapered walls, a rolled rim and a floor. */
+function tub(a: number, b: number, y: number, size: number, height: number, color: string) {
+  const g = new THREE.Group()
+  const plastic = new THREE.MeshPhysicalMaterial({ color, roughness: 0.35, clearcoat: 0.5, clearcoatRoughness: 0.3, side: THREE.DoubleSide })
+  const top = (size / 2) * Math.SQRT2
+  const bottom = top * 0.86
+  const walls = new THREE.Mesh(new THREE.CylinderGeometry(top, bottom, height, 4, 1, true), plastic)
+  walls.rotation.y = Math.PI / 4
+  walls.position.y = height / 2
+  const floor = new THREE.Mesh(new THREE.CylinderGeometry(bottom, bottom, 0.004, 4), plastic)
+  floor.rotation.y = Math.PI / 4
+  floor.position.y = 0.002
+  const rim = new THREE.Mesh(new THREE.CylinderGeometry(top * 1.05, top * 1.02, 0.008, 4, 1, true), plastic)
+  rim.rotation.y = Math.PI / 4
+  rim.position.y = height - 0.004
+  g.add(walls, floor, rim)
+  g.position.set(a, y, b)
+  return shadowed(g)
 }
 
 // ---------------------------------------------------------------------------
@@ -149,22 +221,7 @@ function buildSort(g: THREE.Group, pick: THREE.Object3D[]) {
   const tb = table(t.a0, t.a1, t.b0, t.b1, t.h, M.wood, M.woodDark)
   g.add(tb)
   pick.push(tb)
-  const s = SORT.binSize / 2
-  for (const bin of SORT.bins) {
-    const m = mat(COLORS[bin.color], { roughness: 0.55 })
-    const y0 = t.h
-    const y1 = t.h + SORT.binWall
-    const w = 0.006
-    const bg = new THREE.Group()
-    bg.add(
-      slab(bin.a - s, bin.a + s, y0, y0 + SORT.binFloor, bin.b - s, bin.b + s, m),
-      slab(bin.a - s, bin.a + s, y0, y1, bin.b - s, bin.b - s + w, m),
-      slab(bin.a - s, bin.a + s, y0, y1, bin.b + s - w, bin.b + s, m),
-      slab(bin.a - s, bin.a - s + w, y0, y1, bin.b - s, bin.b + s, m),
-      slab(bin.a + s - w, bin.a + s, y0, y1, bin.b - s, bin.b + s, m),
-    )
-    g.add(bg)
-  }
+  for (const bin of SORT.bins) g.add(tub(bin.a, bin.b, t.h, SORT.binSize, SORT.binWall, COLORS[bin.color]))
 }
 
 interface KitchenParts {
@@ -278,43 +335,44 @@ interface LaundryParts {
 }
 function buildLaundry(g: THREE.Group, pick: THREE.Object3D[]): LaundryParts {
   const t = LAUNDRY.table
-  const tb = table(t.a0, t.a1, t.b0, t.b1, t.h, mat('#cbd5e1', { roughness: 0.5 }), M.steelDark)
+  const tb = table(t.a0, t.a1, t.b0, t.b1, t.h, mat('#ffffff', { map: woodTexture([1, 1], '#d9c3a3'), roughness: 0.5, metalness: 0 }), M.steelDark)
   g.add(tb)
   pick.push(tb)
-  const { verts: flat, mask } = shirtGrid()
+  const { verts: flat, uv } = shirtGrid()
   const geo = new THREE.BufferGeometry()
   const verts = new Float32Array(flat)
   geo.setAttribute('position', new THREE.BufferAttribute(verts, 3))
-  // Colours: teal jersey with a darker hem, cuffs and collar.
-  const colors = new Float32Array(flat.length)
-  const base = new THREE.Color('#0d9488')
-  const trim = new THREE.Color('#115e59')
-  const { hemA, length, half } = LAUNDRY.shirt
-  for (let i = 0; i <= CLOTH_NU; i++) {
-    for (let j = 0; j <= CLOTH_NV; j++) {
-      const k = (i * (CLOTH_NV + 1) + j) * 3
-      const a = flat[k]
-      const b = Math.abs(flat[k + 2])
-      const c = a < hemA + 0.015 || b > LAUNDRY.shirt.sleeve - 0.02 || (a > hemA + length - 0.035 && b < 0.075) ? trim : base
-      const shade = 0.92 + 0.08 * Math.sin(j * 1.7) * Math.sin(i * 1.3)
-      colors[k] = c.r * shade
-      colors[k + 1] = c.g * shade
-      colors[k + 2] = c.b * shade
-      void half
-    }
-  }
-  geo.setAttribute('color', new THREE.BufferAttribute(colors, 3))
+  geo.setAttribute('uv', new THREE.BufferAttribute(uv, 2))
   const index: number[] = []
   for (let i = 0; i < CLOTH_NU; i++) {
     for (let j = 0; j < CLOTH_NV; j++) {
-      if (!mask[i * CLOTH_NV + j]) continue
       const k = i * (CLOTH_NV + 1) + j
       index.push(k, k + 1, k + CLOTH_NV + 1, k + 1, k + CLOTH_NV + 2, k + CLOTH_NV + 1)
     }
   }
   geo.setIndex(index)
   geo.computeVertexNormals()
-  const cloth = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.95, side: THREE.DoubleSide }))
+  // Heathered navy cotton jersey; the T-shirt outline is cut out of the grid by the alpha map.
+  const tx = shirtTextures()
+  const cloth = new THREE.Mesh(
+    geo,
+    new THREE.MeshPhysicalMaterial({
+      map: tx.map,
+      alphaMap: tx.alpha,
+      alphaTest: 0.5,
+      bumpMap: tx.bump,
+      bumpScale: 0.9,
+      roughness: 0.93,
+      metalness: 0,
+      sheen: 0.25,
+      sheenRoughness: 0.8,
+      sheenColor: new THREE.Color('#4f6788'),
+      envMapIntensity: 0.4,
+      side: THREE.DoubleSide,
+    }),
+  )
+  // Shadows follow the shirt's outline, not the whole grid.
+  cloth.customDepthMaterial = new THREE.MeshDepthMaterial({ depthPacking: THREE.RGBADepthPacking, alphaMap: tx.alpha, alphaTest: 0.5, side: THREE.DoubleSide })
   cloth.castShadow = true
   cloth.receiveShadow = true
   cloth.frustumCulled = false
@@ -403,14 +461,20 @@ function buildWasher(g: THREE.Group, pick: THREE.Object3D[]): WasherParts {
   const s = W.stand
   const st = table(s.a0, s.a1, s.b0, s.b1, s.top, M.wood, M.woodDark)
   g.add(st)
-  const bw = 0.008
+  const bw = 0.01
   const bt = s.top + W.basketWall
+  const rimMat = mat('#8a6232', { roughness: 0.8, metalness: 0 })
   g.add(
-    slab(s.a0 + 0.02, s.a1 - 0.02, s.top, s.top + bw, s.b0 + 0.02, s.b1 - 0.02, M.wicker),
-    slab(s.a0 + 0.02, s.a0 + 0.02 + bw, s.top, bt, s.b0 + 0.02, s.b1 - 0.02, M.wicker),
-    slab(s.a1 - 0.02 - bw, s.a1 - 0.02, s.top, bt, s.b0 + 0.02, s.b1 - 0.02, M.wicker),
-    slab(s.a0 + 0.02, s.a1 - 0.02, s.top, bt, s.b0 + 0.02, s.b0 + 0.02 + bw, M.wicker),
-    slab(s.a0 + 0.02, s.a1 - 0.02, s.top, bt, s.b1 - 0.02 - bw, s.b1 - 0.02, M.wicker),
+    slab(s.a0 + 0.02, s.a1 - 0.02, s.top, s.top + bw, s.b0 + 0.02, s.b1 - 0.02, M.wicker, 0.004),
+    slab(s.a0 + 0.02, s.a0 + 0.02 + bw, s.top, bt, s.b0 + 0.02, s.b1 - 0.02, M.wicker, 0.004),
+    slab(s.a1 - 0.02 - bw, s.a1 - 0.02, s.top, bt, s.b0 + 0.02, s.b1 - 0.02, M.wicker, 0.004),
+    slab(s.a0 + 0.02, s.a1 - 0.02, s.top, bt, s.b0 + 0.02, s.b0 + 0.02 + bw, M.wicker, 0.004),
+    slab(s.a0 + 0.02, s.a1 - 0.02, s.top, bt, s.b1 - 0.02 - bw, s.b1 - 0.02, M.wicker, 0.004),
+    // Rolled rim around the top.
+    slab(s.a0 + 0.015, s.a1 - 0.015, bt - 0.004, bt + 0.008, s.b0 + 0.015, s.b0 + 0.033, rimMat, 0.005),
+    slab(s.a0 + 0.015, s.a1 - 0.015, bt - 0.004, bt + 0.008, s.b1 - 0.033, s.b1 - 0.015, rimMat, 0.005),
+    slab(s.a0 + 0.015, s.a0 + 0.033, bt - 0.004, bt + 0.008, s.b0 + 0.015, s.b1 - 0.015, rimMat, 0.005),
+    slab(s.a1 - 0.033, s.a1 - 0.015, bt - 0.004, bt + 0.008, s.b0 + 0.015, s.b1 - 0.015, rimMat, 0.005),
   )
   return { lid, drum, led, display }
 }

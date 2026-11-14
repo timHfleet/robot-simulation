@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type PointerEvent as RPointerEvent } from 
 import * as THREE from 'three'
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
 import { TransformControls } from 'three/examples/jsm/controls/TransformControls.js'
+import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js'
 import { RoundedBoxGeometry } from 'three/examples/jsm/geometries/RoundedBoxGeometry.js'
 import { ArrowDown, ArrowLeft, ArrowRight, ArrowUp, Boxes, Crosshair, Hand, RotateCcw, Shirt, SlidersHorizontal, Square, UtensilsCrossed, WashingMachine } from 'lucide-react'
 import clsx from 'clsx'
@@ -529,7 +530,14 @@ function buildWorld(el: HTMLDivElement): World {
   controls.maxDistance = 8
   controls.update()
 
-  scene.add(new THREE.HemisphereLight('#e0ecff', '#111827', 1.15))
+  // Soft studio reflections so steel, glazed ceramics and plastics look like the real thing.
+  const pmrem = new THREE.PMREMGenerator(renderer)
+  scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture
+  scene.environmentIntensity = 0.45
+  pmrem.dispose()
+  renderer.toneMapping = THREE.ACESFilmicToneMapping
+  renderer.toneMappingExposure = 1.05
+  scene.add(new THREE.HemisphereLight('#e0ecff', '#111827', 0.75))
   const sun = new THREE.DirectionalLight('#ffffff', 2.3)
   sun.castShadow = true
   sun.shadow.mapSize.set(2048, 2048)

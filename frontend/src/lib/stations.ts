@@ -163,67 +163,85 @@ export const LAUNDRY = {
   ] as { point: [number, number, number]; n: [number, number, number]; pinch: [number, number] }[],
 }
 export const CLOTH_Y = LAUNDRY.table.h + 0.003
-export const CLOTH_NU = 30 // cells along a (hem to collar)
-export const CLOTH_NV = 68 // cells along b (sleeve to sleeve)
+export const CLOTH_NU = 44 // cells along a (hem to collar)
+export const CLOTH_NV = 100 // cells along b (sleeve to sleeve)
+/** Radius of the rounded crease where the shirt folds over. */
+const CREASE = 0.004
 
-/** Flat shirt: vertex positions (station-local) and which grid cells are fabric. */
+/**
+ * Flat shirt: a fine grid over the shirt's rectangle (its T-shirt outline is cut out
+ * by a transparency texture), with texture coordinates and a few millimetres of
+ * soft wrinkles so it doesn't lie perfectly flat.
+ */
 export function shirtGrid() {
   const { hemA, length, sleeve } = LAUNDRY.shirt
-  const verts = new Float32Array((CLOTH_NU + 1) * (CLOTH_NV + 1) * 3)
+  const n = (CLOTH_NU + 1) * (CLOTH_NV + 1)
+  const verts = new Float32Array(n * 3)
+  const uv = new Float32Array(n * 2)
   for (let i = 0; i <= CLOTH_NU; i++) {
     for (let j = 0; j <= CLOTH_NV; j++) {
-      const k = (i * (CLOTH_NV + 1) + j) * 3
-      verts[k] = hemA + (i / CLOTH_NU) * length
-      verts[k + 1] = CLOTH_Y
-      verts[k + 2] = -sleeve + (j / CLOTH_NV) * 2 * sleeve
+      const k = i * (CLOTH_NV + 1) + j
+      const a = hemA + (i / CLOTH_NU) * length
+      const b = -sleeve + (j / CLOTH_NV) * 2 * sleeve
+      const wrinkle =
+        0.0018 * Math.sin(a * 61 + b * 23) * Math.sin(b * 47 - a * 9) + 0.0012 * Math.sin(a * 140 + 1.3) * Math.cos(b * 90 + 0.4)
+      verts[k * 3] = a
+      verts[k * 3 + 1] = CLOTH_Y + 0.0015 + wrinkle
+      verts[k * 3 + 2] = b
+      uv[k * 2] = j / CLOTH_NV
+      uv[k * 2 + 1] = i / CLOTH_NU
     }
   }
-  const mask = new Uint8Array(CLOTH_NU * CLOTH_NV)
-  for (let i = 0; i < CLOTH_NU; i++) {
-    for (let j = 0; j < CLOTH_NV; j++) {
-      const a = hemA + ((i + 0.5) / CLOTH_NU) * length
-      const b = -sleeve + ((j + 0.5) / CLOTH_NV) * 2 * sleeve
-      mask[i * CLOTH_NV + j] = shirtCell(a, b) ? 1 : 0
-    }
-  }
-  return { verts, mask }
+  return { verts, uv }
 }
 
-function shirtCell(a: number, b: number) {
-  const { hemA, length, half, sleeve, sleeveA0, sleeveA1, neck } = LAUNDRY.shirt
-  const top = hemA + length
-  const ab = Math.abs(b)
-  if (a > top - 0.02 && ab < neck) return false // neck opening
-  if (ab <= half) return true // body
-  if (ab > sleeve) return false
-  // Sleeves taper toward the cuff.
-  const t = (ab - half) / (sleeve - half)
-  const s0 = sleeveA0 + 0.035 * t
-  const s1 = sleeveA1 - 0.01 * t
-  return a >= s0 && a <= s1
-}
-
-/** Apply the folds (angles 0 = flat, pi = folded over) to the flat shirt. */
+/**
+ * Apply the folds (angles 0 = flat, pi = folded over) to the flat shirt. Fabric on
+ * the moving side of a fold line rolls over a small rounded crease, like real cloth,
+ * rather than hinging on a sharp edge.
+ */
 export function foldShirt(flat: Float32Array, angles: number[], out: Float32Array) {
   out.set(flat)
-  const p = new THREE.Vector3()
-  const axis = new THREE.Vector3()
-  const q = new THREE.Quaternion()
   LAUNDRY.folds.forEach((f, k) => {
     const th = angles[k]
     if (th <= 0) return
-    const n = new THREE.Vector3(...f.n)
-    const pivot = new THREE.Vector3(...f.point)
-    axis.crossVectors(n, UP).normalize()
-    q.setFromAxisAngle(axis, th)
+    const [nx, , nz] = f.n
+    const [px, py, pz] = f.point
+    const c = Math.cos(th)
+    const sn = Math.sin(th)
     for (let i = 0; i < out.length; i += 3) {
-      p.set(out[i], out[i + 1], out[i + 2])
-      // Fold the part on the moving side of the line (judged on the table plane).
-      if ((p.x - pivot.x) * n.x + (p.z - pivot.z) * n.z <= 0) continue
-      p.sub(pivot).applyQuaternion(q).add(pivot)
-      out[i] = p.x
-      out[i + 1] = p.y
-      out[i + 2] = p.z
+      const x = out[i]
+      const y = out[i + 1]
+      const z = out[i + 2]
+      const d = (x - px) * nx + (z - pz) * nz // distance past the fold line
+      if (d <= 0) continue
+      const h = y - py // the fabric's height above the fold plane (wrinkles, earlier layers)
+      // Point on the line, then along the crease arc, then straight on.
+      const lx = x - nx * d
+      const lz = z - nz * d
+      let along: number
+      let up: number
+      let tn: number
+      let tu: number
+      if (d < CREASE * th) {
+        const phi = d / CREASE
+        along = CREASE * Math.sin(phi)
+        up = CREASE * (1 - Math.cos(phi))
+        tn = Math.cos(phi)
+        tu = Math.sin(phi)
+      } else {
+        const rest = d - CREASE * th
+        along = CREASE * sn + c * rest
+        up = CREASE * (1 - c) + sn * rest
+        tn = c
+        tu = sn
+      }
+      // Offset along the surface normal (the fabric's own "up" turned with it).
+      const normN = -tu
+      const normU = tn
+      out[i] = lx + nx * (along + normN * h)
+      out[i + 1] = py + up + normU * h
+      out[i + 2] = lz + nz * (along + normN * h)
     }
   })
 }
@@ -315,7 +333,7 @@ export const ITEMS: ItemDef[] = [
     kind: 'clothes' as const,
     color: c.color,
     station: 'washer' as const,
-    pos: [c.a, WASHER.stand.top + 0.035 + i * 0.012, c.b] as [number, number, number],
+    pos: [c.a, WASHER.stand.top + 0.024 + i * 0.002, c.b] as [number, number, number],
     yaw: i * 0.7,
   })),
 ]
