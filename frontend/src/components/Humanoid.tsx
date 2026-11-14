@@ -54,6 +54,8 @@ const ACCEL = 1.4
 const TURN_ACCEL = 6
 const MAX_TURN = 1.6
 const SIDES: Side[] = ['L', 'R']
+/** How quickly arm moves reach full speed along their path (fraction of full speed per second). */
+const PATH_ACCEL = 2.5
 
 const CAM_OFFSET = new THREE.Vector3(1.5, 1.55, 2.5)
 const CAM_LOOK = new THREE.Vector3(0, 0.8, 0)
@@ -864,7 +866,25 @@ export default function Humanoid() {
       anims: [] as { key: 'door' | 'lowerRack' | 'upperRack' | 'lid'; from: number; to: number; t: number; dur: number }[],
       look: null as THREE.Vector3 | null,
       /** The move being executed: joint targets for each small step of the hand's path. */
-      mq: null as null | { step: number; K: number; qs: Partial<Record<Side, number[][]>>; ws: number[] },
+      /**
+       * The move being executed, as a trajectory: joint angles at each small step of the hand's
+       * path, how long each step takes at full joint speed, and how far along it the arm is.
+       */
+      mq: null as null | {
+        K: number
+        qs: Partial<Record<Side, number[][]>>
+        ws: number[]
+        q0: Record<Side, number[]>
+        w0: number
+        /** Duration of each step at full speed (s), and their running total. */
+        dur: number[]
+        cum: number[]
+        /** Progress along the move, in seconds-at-full-speed. */
+        s: number
+        via: boolean
+      },
+      /** Speed along the current path, 0 to 1 of full joint speed (carried through via moves). */
+      pathSpeed: 0,
       /** Per-joint speed scale so all joints of an arm start and finish a move together. */
       vscale: { L: new Array(DOF).fill(1), R: new Array(DOF).fill(1) } as Record<Side, number[]>,
     }
@@ -983,18 +1003,11 @@ export default function Humanoid() {
       sim.vscale[side] = t.map((x) => (tm > 1e-6 ? Math.max(0.04, x / tm) : 1))
       sim.qT[side] = [...q]
     }
-    const applyStep = (j: number) => {
-      const mq = sim.mq!
-      for (const side of SIDES) {
-        const path = mq.qs[side]
-        if (path) setQT(side, path[j])
-      }
-      sim.waistT = mq.ws[j]
-    }
     const mechStation = (m: Mechanism): StationId => (m.kind === 'lid' ? 'washer' : m.kind === 'fold' ? 'laundry' : 'kitchen')
     const tcpWorld = (side: Side) => w.arms[side].tcp.getWorldPosition(new THREE.Vector3())
 
     const begin = (a: Act) => {
+      if (a.k !== 'move') sim.pathSpeed = 0
       const T = sim.task!
       switch (a.k) {
         case 'say':
@@ -1046,8 +1059,26 @@ export default function Humanoid() {
               console.debug(`[ik] ${side} misses by ${(r.res.posErr * 1000).toFixed(0)} mm at step ${sim.task?.i}: target ${toLocal(station, (g as { pos: THREE.Vector3 }).pos).toArray().map((v) => v.toFixed(3))}`)
             if (g.frame !== 'torso') sim.look = g.pos.clone()
           }
-          sim.mq = { step: 0, K, qs, ws: Array.from({ length: K }, (_, k) => w0 + ((w1 - w0) * (k + 1)) / K) }
-          applyStep(0)
+          const ws = Array.from({ length: K }, (_, k) => w0 + ((w1 - w0) * (k + 1)) / K)
+          // How long each step takes with the slowest joint at its top speed.
+          const q0 = { L: [...sim.q.L], R: [...sim.q.R] }
+          const dur: number[] = []
+          const cum: number[] = []
+          let total = 0
+          for (let k = 0; k < K; k++) {
+            let d = Math.abs(ws[k] - (k ? ws[k - 1] : sim.waist)) / WAIST.vmax
+            for (const side of SIDES) {
+              const path = qs[side]
+              if (!path) continue
+              const prev = k ? path[k - 1] : q0[side]
+              for (let i = 0; i < DOF; i++) d = Math.max(d, Math.abs(path[k][i] - prev[i]) / (ARM[i].vmax * sim.slow[side]))
+            }
+            d = Math.max(d, 1e-3)
+            dur.push(d)
+            total += d
+            cum.push(total)
+          }
+          sim.mq = { K, qs, ws, q0, w0: sim.waist, dur, cum, s: 0, via: !!a.via }
           break
         }
         case 'grip':
@@ -1145,25 +1176,7 @@ export default function Humanoid() {
         case 'move': {
           const mq = sim.mq
           if (!mq) return true
-          const last = mq.step === mq.K - 1
-          const tol = last && !a.via ? 0.004 : 0.06
-          const settled =
-            SIDES.every((side) => {
-              if (!mq.qs[side]) return true
-              let err = 0
-              let vel = 0
-              for (let i = 0; i < DOF; i++) {
-                err = Math.max(err, Math.abs(sim.q[side][i] - sim.qT[side][i]))
-                vel = Math.max(vel, Math.abs(sim.qv[side][i]))
-              }
-              return err < tol && (tol > 0.01 || vel < 0.05)
-            }) && Math.abs(sim.waist - sim.waistT) < tol && (tol > 0.01 || Math.abs(sim.waistV) < 0.05)
-          if (!settled) return false
-          if (!last) {
-            mq.step++
-            applyStep(mq.step)
-            return false
-          }
+          if (mq.s < mq.cum[mq.K - 1] - 1e-9) return false
           sim.mq = null
           return true
         }
@@ -1419,9 +1432,45 @@ export default function Humanoid() {
 
         // Motors: every joint follows its target with a trapezoidal velocity profile.
         ;[sim.lift, sim.liftV] = servoStep(sim.lift, sim.liftV, sim.liftT ?? st.lift, LIFT_V, LIFT_A, h)
-        ;[sim.waist, sim.waistV] = servoStep(sim.waist, sim.waistV, sim.waistT, WAIST.vmax, WAIST.amax, h)
+        const mq = sim.mq
+        if (mq) {
+          // Follow the path smoothly: speed up at the start, cruise, and slow down only where the
+          // motion really ends (a via move hands its speed on to the next move). Every joint stays
+          // within its top speed, and nothing surges and brakes at each small step of the path.
+          const total = mq.cum[mq.K - 1]
+          const left = total - mq.s
+          const cap = mq.via ? 1 : Math.sqrt(2 * PATH_ACCEL * left)
+          sim.pathSpeed = Math.max(0.03, Math.min(1, cap, sim.pathSpeed + PATH_ACCEL * h))
+          mq.s = Math.min(total, mq.s + sim.pathSpeed * h)
+          let k = 0
+          while (k < mq.K - 1 && mq.cum[k] < mq.s) k++
+          const f = Math.min(1, Math.max(0, 1 - (mq.cum[k] - mq.s) / mq.dur[k]))
+          for (const side of SIDES) {
+            const path = mq.qs[side]
+            if (!path) continue
+            const prev = k ? path[k - 1] : mq.q0[side]
+            for (let i = 0; i < DOF; i++) {
+              const q = prev[i] + (path[k][i] - prev[i]) * f
+              sim.qv[side][i] = (q - sim.q[side][i]) / h
+              sim.q[side][i] = q
+              sim.qT[side][i] = q
+            }
+          }
+          const wPrev = k ? mq.ws[k - 1] : mq.w0
+          const wq = wPrev + (mq.ws[k] - wPrev) * f
+          sim.waistV = (wq - sim.waist) / h
+          sim.waist = wq
+          sim.waistT = wq
+          if (mq.s >= total && !mq.via) sim.pathSpeed = 0
+        } else {
+          ;[sim.waist, sim.waistV] = servoStep(sim.waist, sim.waistV, sim.waistT, WAIST.vmax, WAIST.amax, h)
+        }
         for (const side of SIDES) {
           const target = side === 'R' && waving ? waveQ : sim.qT[side]
+          if (mq?.qs[side]) {
+            sim.grip[side] = approach(sim.grip[side], sim.task ? sim.gripT[side] : st.grip[side], 1.5 * h)
+            continue
+          }
           for (let i = 0; i < DOF; i++) {
             ;[sim.q[side][i], sim.qv[side][i]] = servoStep(sim.q[side][i], sim.qv[side][i], target[i], ARM[i].vmax * sim.slow[side] * (waving && side === 'R' ? 1 : sim.vscale[side][i]), ARM[i].amax * (waving && side === 'R' ? 1 : sim.vscale[side][i]), h)
           }

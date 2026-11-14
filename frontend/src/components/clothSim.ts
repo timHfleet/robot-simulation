@@ -32,8 +32,9 @@ const SLEEP_AFTER = 3
 const MIN_DIST = 0.0085
 /** Cloth rests this far above the table. */
 const REST_UP = 0.0045
-/** Below this much sliding per step, cloth on the table sticks. */
-const STICK = 0.003
+/** Friction of cotton on the wooden table (static and sliding). */
+const MU_STATIC = 1.1
+const MU_KINETIC = 0.8
 /** How strongly touching layers of cloth are made to move together (0 to 1). */
 /** Tunable at run time in development (window.__cloth.tune). */
 const TUNE = { layerGrip: 0.8, selfCollide: true }
@@ -274,6 +275,9 @@ export function createCloth(parts: ClothParts): Cloth {
 
   // Spatial hash for self-collision.
   const CELL = MIN_DIST
+  /** Friction corrections gathered over all contacts, then averaged. */
+  const fr = new Float32Array(N * 3)
+  const fn = new Float32Array(N)
   const BUCKETS = 8192
   const head = new Int32Array(BUCKETS)
   const next = new Int32Array(N)
@@ -282,24 +286,26 @@ export function createCloth(parts: ClothParts): Cloth {
 
   const t = LAUNDRY.table
   const floorY = t.h + REST_UP
-  let stick = STICK
   const collideTable = (k: number) => {
     const x = pos[k * 3]
     const z = pos[k * 3 + 2]
     const onTable = x > t.a0 && x < t.a1 && z > t.b0 && z < t.b1
     const lim = onTable ? floorY : 0.003
     if (pos[k * 3 + 1] < lim) {
+      // Coulomb friction: the grip comes from how hard the cloth presses on the table (how far
+      // gravity pushed it in this step). The cloth sticks while it's barely pushed and slides with
+      // a steady drag when pulled, instead of sticking dead and then snapping free (stick-slip
+      // judder, which looked like shaking).
+      const pen = lim - pos[k * 3 + 1]
       pos[k * 3 + 1] = lim
-      // Friction, applied to position (as position-based dynamics does): cotton on wood stays
-      // exactly where it lies unless it's pulled firmly, then slides with the excess.
       const sx = x - prev[k * 3]
       const sz = z - prev[k * 3 + 2]
       const d = Math.hypot(sx, sz)
-      if (d < stick) {
+      if (d < MU_STATIC * pen) {
         pos[k * 3] = prev[k * 3]
         pos[k * 3 + 2] = prev[k * 3 + 2]
       } else {
-        const keep = 1 - stick / d
+        const keep = Math.max(0, 1 - (MU_KINETIC * pen) / d)
         pos[k * 3] = prev[k * 3] + sx * keep
         pos[k * 3 + 2] = prev[k * 3 + 2] + sz * keep
       }
@@ -316,6 +322,8 @@ export function createCloth(parts: ClothParts): Cloth {
     }
     const d2min = MIN_DIST * MIN_DIST
     const d2fric = (MIN_DIST * 1.35) ** 2
+    fr.fill(0)
+    fn.fill(0)
     for (let k = 0; k < N; k++) {
       if (!active[k]) continue
       const x = pos[k * 3]
@@ -368,16 +376,30 @@ export function createCloth(parts: ClothParts): Cloth {
                 rx -= rn * nx
                 ry -= rn * ny
                 rz -= rn * nz
-                const f = TUNE.layerGrip * press
-                pos[k * 3] += rx * f * (inv[k] / w)
-                pos[k * 3 + 1] += ry * f * (inv[k] / w)
-                pos[k * 3 + 2] += rz * f * (inv[k] / w)
-                pos[m * 3] -= rx * f * (inv[m] / w)
-                pos[m * 3 + 1] -= ry * f * (inv[m] / w)
-                pos[m * 3 + 2] -= rz * f * (inv[m] / w)
+                // Collected, not applied yet: a point in a folded stack touches many points
+                // above and below, and applying each contact's correction in turn adds up to more
+                // than the whole difference, so the layers overshoot back and forth (shaking).
+                const f = press * 2
+                fr[k * 3] += rx * f * (inv[k] / w)
+                fr[k * 3 + 1] += ry * f * (inv[k] / w)
+                fr[k * 3 + 2] += rz * f * (inv[k] / w)
+                fr[m * 3] -= rx * f * (inv[m] / w)
+                fr[m * 3 + 1] -= ry * f * (inv[m] / w)
+                fr[m * 3 + 2] -= rz * f * (inv[m] / w)
+                fn[k] += press
+                fn[m] += press
               }
             }
           }
+    }
+    // Each point moves toward the average motion of the layers it rests on (by at most the
+    // grip fraction of the difference), however many contacts it has.
+    for (let k = 0; k < N; k++) {
+      if (!fn[k]) continue
+      const g = TUNE.layerGrip / Math.max(1, fn[k] * 2)
+      pos[k * 3] += fr[k * 3] * g
+      pos[k * 3 + 1] += fr[k * 3 + 1] * g
+      pos[k * 3 + 2] += fr[k * 3 + 2] * g
     }
   }
 
@@ -390,7 +412,6 @@ export function createCloth(parts: ClothParts): Cloth {
     const damp = idle > SETTLE_AFTER ? Math.min(SETTLE_MAX, DAMPING + (idle - SETTLE_AFTER) * SETTLE_RATE) : DAMPING
     const vs = (1 - damp) * (h / hPrev)
     hPrev = h
-    stick = STICK * (h / STEP)
     let moved = 0
     for (let k = 0; k < N; k++) {
       if (!inv[k]) continue
