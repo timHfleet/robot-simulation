@@ -391,7 +391,10 @@ function planFold(foldsDone: boolean): Act[] {
     )
     return list
   }
-  acts.push(...sideFold(0, 'L', 'Left hand folds the left side and sleeve in'), ...sideFold(1, 'R', 'Right hand folds the right side and sleeve in'))
+  acts.push(
+    ...sideFold(0, 'L', 'Left hand folds the left side and sleeve in'),
+    ...sideFold(1, 'R', 'Right hand folds the right side and sleeve in'),
+  )
   // Bottom up, both hands together on the hem corners.
   const [pa, pb] = LAUNDRY.folds[2].pinch
   const both = (th: number, lift = 0) => ({
@@ -400,6 +403,8 @@ function planFold(foldsDone: boolean): Act[] {
   })
   acts.push(
     { k: 'say', text: 'Both hands fold the bottom up' },
+    // Lower the torso: laying the hem down on the far side is a long, low reach.
+    { k: 'lift', h: 0.9 },
     { k: 'grip', side: 'L', g: 0.35 },
     { k: 'grip', side: 'R', g: 0.35 },
     { k: 'move', arms: both(0, 0.08) },

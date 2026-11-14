@@ -34,6 +34,7 @@ import { handPath, keepOutsFor, pathSteps, toRobotGoal, waistForMove, type HandG
 import { TASKS, planTask, type Act, type Mechanism, type PlanCtx, type TaskId } from '../lib/tasks'
 import { buildStations, type Mech, type Stations } from './stationProps'
 import type { Physics, PhysicsStats } from './physicsWorld'
+import { createCloth } from './clothSim'
 
 // ---------------------------------------------------------------------------
 // Geometry (metres). Robot frame: x forward, y up, z to the robot's right.
@@ -812,6 +813,10 @@ export default function Humanoid() {
           if (import.meta.env.DEV) (window as unknown as { __physics: Physics }).__physics = p
         })
     startPhysics()
+    // The shirt is simulated cloth: the hands pinch it and it drapes and folds under gravity.
+    const cloth = createCloth(w.stations.parts.cloth)
+    w.stations.useClothPhysics()
+    if (import.meta.env.DEV) Object.assign(window, { __world: w, __cloth: cloth })
     /** Items let go of, to check where they ended up once they settle. */
     let landing: { id: string; where: string; at: number }[] = []
 
@@ -957,6 +962,7 @@ export default function Humanoid() {
         if (sim.task) endTask(null)
         S.reset()
         phys?.reset()
+        cloth.reset()
         landing = []
         say('Scene reset')
       },
@@ -1030,6 +1036,8 @@ export default function Humanoid() {
             const r = handPath(side, sim.qT[side], lift, w0, w1, goals[side]!, K, { rest: REST, keepOut })
             qs[side] = r.qs
             sim.ik[side] = r.res
+            if (import.meta.env.DEV && !r.res.reached)
+              console.debug(`[ik] ${side} misses by ${(r.res.posErr * 1000).toFixed(0)} mm at step ${sim.task?.i}: target ${toLocal(station, (g as { pos: THREE.Vector3 }).pos).toArray().map((v) => v.toFixed(3))}`)
             if (g.frame !== 'torso') sim.look = g.pos.clone()
           }
           sim.mq = { step: 0, K, qs, ws: Array.from({ length: K }, (_, k) => w0 + ((w1 - w0) * (k + 1)) / K) }
@@ -1074,12 +1082,17 @@ export default function Humanoid() {
           break
         }
         case 'bind': {
+          if (a.mech.kind === 'fold') {
+            // Pinch the cloth under every closed hand that is down at it (both hands for the bottom fold).
+            for (const side of SIDES) if (sim.gripT[side] < 0.1) cloth.pinch(side, toLocal('laundry', tcpWorld(side)))
+          }
           const local = toLocal(mechStation(a.mech), tcpWorld(a.side))
           const out0 = a.mech.kind === 'rack' ? (a.mech.rack === 'lower' ? S.mech.lowerRack : S.mech.upperRack) : 0
           sim.binds[a.side] = { mech: a.mech, a0: local.x, out0 }
           break
         }
         case 'unbind':
+          if (sim.binds[a.side]?.mech.kind === 'fold') for (const side of SIDES) cloth.release(side)
           delete sim.binds[a.side]
           break
         case 'animate':
@@ -1396,6 +1409,7 @@ export default function Humanoid() {
       }
       sim.anims = sim.anims.filter((an) => an.t < 1)
       S.apply(sim.time, dt)
+      cloth.step(dt, { L: toLocal('laundry', tcpWorld('L')), R: toLocal('laundry', tcpWorld('R')) })
       if (phys) {
         try {
           phys.step(dt)

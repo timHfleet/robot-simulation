@@ -40,7 +40,15 @@ export interface Stations {
   containers: Record<string, THREE.Object3D>
   items: Map<string, THREE.Object3D>
   /** Moving parts, for the physics engine. */
-  parts: { door: THREE.Object3D; lid: THREE.Object3D; drum: THREE.Object3D; racks: Record<RackId, THREE.Object3D> }
+  parts: {
+    door: THREE.Object3D
+    lid: THREE.Object3D
+    drum: THREE.Object3D
+    racks: Record<RackId, THREE.Object3D>
+    cloth: { mesh: THREE.Mesh; flat: Float32Array; verts: Float32Array; mask: (u: number, v: number) => boolean }
+  }
+  /** Hand the shirt's shape over to the cloth simulation (fold angles then no longer move it). */
+  useClothPhysics: () => void
   /** Where each item is: 'home', 'held', 'bin:red', 'rack', 'drum', ... */
   where: Map<string, string>
   pickables: THREE.Object3D[]
@@ -334,6 +342,8 @@ interface LaundryParts {
   cloth: THREE.Mesh
   flat: Float32Array
   verts: Float32Array
+  /** Is texture point (u, v) inside the T-shirt outline? */
+  mask: (u: number, v: number) => boolean
 }
 function buildLaundry(g: THREE.Group, pick: THREE.Object3D[]): LaundryParts {
   const t = LAUNDRY.table
@@ -379,7 +389,15 @@ function buildLaundry(g: THREE.Group, pick: THREE.Object3D[]): LaundryParts {
   cloth.receiveShadow = true
   cloth.frustumCulled = false
   g.add(cloth)
-  return { cloth, flat, verts }
+  // The outline, read back from the transparency texture (u across the shirt, v hem to collar).
+  const img = tx.alpha.image as HTMLCanvasElement
+  const px = img.getContext('2d')!.getImageData(0, 0, img.width, img.height).data
+  const mask = (u: number, v: number) => {
+    const x = Math.min(img.width - 1, Math.max(0, Math.round(u * (img.width - 1))))
+    const y = Math.min(img.height - 1, Math.max(0, Math.round((1 - v) * (img.height - 1))))
+    return px[(y * img.width + x) * 4] > 127
+  }
+  return { cloth, flat, verts, mask }
 }
 
 interface WasherParts {
@@ -527,6 +545,7 @@ export function buildStations(scene: THREE.Scene): Stations {
   let spin = 0
   let spinV = 0
   let lastFolds = ''
+  let clothPhysics = false
   const apply = (t: number, dt: number) => {
     kitchen.door.rotation.z = mech.door
     kitchen.racks.lower.position.copy(rackOrigin('lower', mech.lowerRack))
@@ -543,7 +562,7 @@ export function buildStations(scene: THREE.Scene): Stations {
     spin += spinV * dt
     washer.drum.rotation.y = spin
     const key = mech.folds.map((f) => f.toFixed(4)).join(',')
-    if (key !== lastFolds) {
+    if (key !== lastFolds && !clothPhysics) {
       lastFolds = key
       foldShirt(laundry.flat, mech.folds, laundry.verts)
       const pos = laundry.cloth.geometry.getAttribute('position') as THREE.BufferAttribute
@@ -561,6 +580,15 @@ export function buildStations(scene: THREE.Scene): Stations {
       if (d.t >= 1) o.userData.drop = null
     }
   }
-  const parts = { door: kitchen.door, lid: washer.lid, drum: washer.drum, racks: kitchen.racks }
-  return { groups, containers, items, where, pickables, mech, apply, reset, parts }
+  const parts = {
+    door: kitchen.door,
+    lid: washer.lid,
+    drum: washer.drum,
+    racks: kitchen.racks,
+    cloth: { mesh: laundry.cloth, flat: laundry.flat, verts: laundry.verts, mask: laundry.mask },
+  }
+  const useClothPhysics = () => {
+    clothPhysics = true
+  }
+  return { groups, containers, items, where, pickables, mech, apply, reset, parts, useClothPhysics }
 }

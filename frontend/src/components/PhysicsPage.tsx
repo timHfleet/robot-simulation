@@ -21,6 +21,7 @@ const COMPARE: [string, string, string][] = [
   ['Items', 'Rigid bodies with mass and friction: they fall, stack, tip over and tumble in the drum', 'Same, for the cup'],
   ['Arm motion', 'Follows the controller exactly and shoves items it touches', 'Torque-limited motors push against mass and gravity'],
   ['Holding an object', 'Holds only if the item is really between the fingers; let go and it drops', 'Finger pads squeeze; friction holds it, or it slips'],
+  ['The T-shirt', 'Simulated cloth (about 860 particles): pinched, lifted, draped and folded; layers grip each other', 'Not modelled'],
   ['Doors and racks', 'Move with the hand; solid, and carry what sits on them', 'Hinge with a spring and damper; the hand must push and pull'],
 ]
 
@@ -67,7 +68,8 @@ export default function PhysicsPage() {
             controls
           />
           <p className="mt-3 text-sm leading-relaxed text-slate-300">
-            The Simulator tab now runs live rigid-body physics (Rapier) for every item, the robot and the appliances. This page shows the
+            The Simulator tab now runs live physics: rigid bodies (Rapier) for every item, the robot and the appliances, and cloth for the
+            T-shirt. This page shows the
             deeper version: the same robot, rebuilt in the <a className="text-cyan-300 hover:underline" href="https://mujoco.org" target="_blank" rel="noreferrer">MuJoCo</a> physics
             engine. It picks up a cup and opens a dishwasher with real mass, motor torque limits, contact and friction. The models are generated
             from this simulator’s own joint table, so both always describe the same arm. Recorded in real time from{' '}
