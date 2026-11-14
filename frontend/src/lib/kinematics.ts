@@ -47,7 +47,7 @@ export const ARM: JointDef[] = [
   { key: 'sy', label: 'Upper-arm twist', offset: [0, -0.075, 0], axis: [0, 1, 0], min: -120, max: 120, vmax: 2.2, amax: 8, rated: 45, mass: { m: 1.6, at: [0, -0.11, 0] }, color: '#a78bfa' },
   { key: 'el', label: 'Elbow', offset: [0, -(UPPER - 0.075), 0], axis: [0, 0, 1], min: 0, max: 150, vmax: 2.2, amax: 8, rated: 60, mass: { m: 0.5, at: [0, -0.03, 0] }, color: '#34d399' },
   { key: 'fy', label: 'Forearm twist', offset: [0, -0.07, 0], axis: [0, 1, 0], min: -170, max: 170, vmax: 3, amax: 10, rated: 18, mass: { m: 1.0, at: [0, -0.1, 0] }, color: '#f472b6' },
-  { key: 'wp', label: 'Wrist pitch', offset: [0, -(FORE - 0.07), 0], axis: [0, 0, 1], min: -125, max: 125, vmax: 3.5, amax: 12, rated: 12, mass: { m: 0.15, at: [0, -0.015, 0] }, color: '#facc15' },
+  { key: 'wp', label: 'Wrist pitch', offset: [0, -(FORE - 0.07), 0], axis: [0, 0, 1], min: -135, max: 135, vmax: 3.5, amax: 12, rated: 12, mass: { m: 0.15, at: [0, -0.015, 0] }, color: '#facc15' },
   { key: 'wy', label: 'Wrist yaw', offset: [0, -0.035, 0], axis: [-1, 0, 0], min: -90, max: 90, vmax: 3.5, amax: 12, rated: 12, mass: { m: 0.6, at: [0, -0.07, 0] }, color: '#fb7185' },
 ]
 export const DOF = ARM.length
@@ -75,7 +75,7 @@ export function torsoBase(lift: number, waist: number) {
  * facing straight ahead. Reaching far to the left with the left hand brings the left shoulder
  * forward; two hands working in front keep the torso square.
  */
-export function waistFor(targets: { side: Side; p: THREE.Vector3 }[], range = 50) {
+export function waistFor(targets: { side: Side; p: THREE.Vector3 }[], range = 60) {
   if (!targets.length) return 0
   const cost = (w: number) => {
     const c = Math.cos(w)
@@ -226,7 +226,16 @@ export function solveIK(
   q0: number[],
   base: THREE.Matrix4,
   target: THREE.Vector3,
-  opts: { dir?: THREE.Vector3 | null; close?: THREE.Vector3 | null; rest: number[]; maxIters?: number },
+  opts: {
+    dir?: THREE.Vector3 | null
+    close?: THREE.Vector3 | null
+    rest: number[]
+    maxIters?: number
+    /** Keep the elbow, wrist and palm above height y wherever they are beyond x (a table in front). */
+    keepAbove?: KeepAbove | null
+    /** Only start from q0 (and the rest pose if that fails): for small steps along a path, so the arm never flips. */
+    local?: boolean
+  },
 ): IKResult {
   const t0 = performance.now()
   const dirT = opts.dir ?? null
@@ -239,17 +248,25 @@ export function solveIK(
   const seeds = [q0, opts.rest]
   let rng = 12345
   const rand = () => ((rng = (rng * 1103515245 + 12345) % 2147483648) / 2147483648)
-  for (let k = 0; k < 6; k++) seeds.push(limitsRad.map(([lo, hi]) => lo + (0.15 + 0.7 * rand()) * (hi - lo)))
+  if (!opts.local) for (let k = 0; k < 6; k++) seeds.push(limitsRad.map(([lo, hi]) => lo + (0.15 + 0.7 * rand()) * (hi - lo)))
+  const ka = opts.keepAbove ?? null
+  // How far a solution is from where the arm is now: prefer the nearest, so the arm
+  // never swings through a big detour to reach a nearby target.
+  const dist = (q: number[]) => q.reduce((s, v, i) => s + (v - q0[i]) ** 2, 0)
   let iters = 0
   const run = (goal: THREE.Vector3) => {
     let best: Attempt | null = null
+    let bestOk: Attempt | null = null
     for (const seed of seeds) {
-      const r = dlsAttempt(side, seed, base, goal, dirT, closeT, opts.rest, opts.maxIters ?? 150)
+      const r = dlsAttempt(side, seed, base, goal, dirT, closeT, opts.rest, opts.maxIters ?? 150, ka)
       iters += r.iters
       if (!best || score(r) < score(best)) best = r
-      if (ok(best)) break
+      if (ok(r)) {
+        if (seed === q0) return r // reached from where the arm is: the most natural answer
+        if (!bestOk || dist(r.q) < dist(bestOk.q)) bestOk = r
+      }
     }
-    return best!
+    return bestOk ?? best!
   }
   let b = run(target)
   // Beyond the arm's length: aim for the nearest point it can reach, on the line
@@ -263,6 +280,12 @@ export function solveIK(
     if (posErr < b.posErr) b = { ...near, posErr }
   }
   return { q: b.q, posErr: b.posErr, dirErr: dirT ? b.dirErr : 0, iters, ms: performance.now() - t0, reached: ok(b) }
+}
+
+/** A horizontal surface the arm must stay above (robot frame): height y, starting at x. */
+export interface KeepAbove {
+  y: number
+  x: number
 }
 
 /** Distance from the shoulder-roll joint to the fingertips with the arm straight. */
@@ -284,6 +307,7 @@ function dlsAttempt(
   closeT: THREE.Vector3 | null,
   rest: number[],
   maxIters: number,
+  keepAbove: KeepAbove | null = null,
 ): Attempt {
   const lambda = 0.03
   const wDir = 0.3
@@ -308,16 +332,19 @@ function dlsAttempt(
     }
     if (dirT && closeT) {
       // Full orientation: desired tool axes y = -approach, z = closing axis, x = y × z.
-      const yd = dirT.clone().negate()
-      const xd = new THREE.Vector3().crossVectors(yd, closeT)
       const xc = new THREE.Vector3(1, 0, 0).transformDirection(f.tool)
       const yc = new THREE.Vector3(0, 1, 0).transformDirection(f.tool)
       const zc = new THREE.Vector3(0, 0, 1).transformDirection(f.tool)
-      dirErr = Math.acos(clamp((xc.dot(xd) + yc.dot(yd) + zc.dot(closeT) - 1) / 2, -1, 1))
+      // The two-finger gripper is symmetric: closing along -z is the same grasp, so
+      // aim for whichever sign is nearer instead of spinning the wrist half a turn.
+      const zd = zc.dot(closeT) < 0 ? closeT.clone().negate() : closeT
+      const yd = dirT.clone().negate()
+      const xd = new THREE.Vector3().crossVectors(yd, zd)
+      dirErr = Math.acos(clamp((xc.dot(xd) + yc.dot(yd) + zc.dot(zd) - 1) / 2, -1, 1))
       const eo = new THREE.Vector3()
         .crossVectors(xc, xd)
         .add(new THREE.Vector3().crossVectors(yc, yd))
-        .add(new THREE.Vector3().crossVectors(zc, closeT))
+        .add(new THREE.Vector3().crossVectors(zc, zd))
         .multiplyScalar(0.5 * wDir)
       e.push(eo.x, eo.y, eo.z)
       J.push(f.axes.map((a) => a.x * wDir), f.axes.map((a) => a.y * wDir), f.axes.map((a) => a.z * wDir))
@@ -337,7 +364,29 @@ function dlsAttempt(
       }
       J.push(...rows)
     }
-    if (posErr < 2e-4 && (!dirT || dirErr < 2e-3)) break
+    // Keep the arm off the work surface: the elbow, forearm, wrist joints and palm get
+    // a "push up" row (only while too low) so the solver lifts them clear.
+    let violated = false
+    if (keepAbove) {
+      const palm = new THREE.Vector3(0, -0.06, 0).applyMatrix4(f.frames[6])
+      const pts: [THREE.Vector3, number][] = [
+        [f.origins[3], 3],
+        [f.origins[4], 4],
+        [f.origins[5], 5],
+        [f.origins[6], 6],
+        [palm, 7],
+      ]
+      const minY = keepAbove.y + 0.035
+      for (const [pt, n] of pts) {
+        if (pt.x < keepAbove.x - 0.05 || pt.y >= minY) continue
+        violated = true
+        const row = new Array(DOF).fill(0)
+        for (let i = 0; i < n; i++) row[i] = new THREE.Vector3().crossVectors(f.axes[i], new THREE.Vector3().subVectors(pt, f.origins[i])).y
+        J.push(row)
+        e.push(minY - pt.y)
+      }
+    }
+    if (!violated && posErr < 2e-4 && (!dirT || dirErr < 2e-3)) break
 
     // A joint pinned at a limit and pushed further out is frozen (its column
     // zeroed) and the step re-solved, so the other joints take over its share.
@@ -365,12 +414,13 @@ function dlsAttempt(
   posErr = f.tcp.distanceTo(target)
   dirErr = dirT ? f.dir.angleTo(dirT) : 0
   if (dirT && closeT) {
-    const yd = dirT.clone().negate()
-    const xd = new THREE.Vector3().crossVectors(yd, closeT)
     const xc = new THREE.Vector3(1, 0, 0).transformDirection(f.tool)
     const yc = new THREE.Vector3(0, 1, 0).transformDirection(f.tool)
     const zc = new THREE.Vector3(0, 0, 1).transformDirection(f.tool)
-    dirErr = Math.acos(clamp((xc.dot(xd) + yc.dot(yd) + zc.dot(closeT) - 1) / 2, -1, 1))
+    const zd = zc.dot(closeT) < 0 ? closeT.clone().negate() : closeT
+    const yd = dirT.clone().negate()
+    const xd = new THREE.Vector3().crossVectors(yd, zd)
+    dirErr = Math.acos(clamp((xc.dot(xd) + yc.dot(yd) + zc.dot(zd) - 1) / 2, -1, 1))
   }
   return { q, posErr, dirErr, iters: it }
 }

@@ -23,7 +23,16 @@ export const DOCKS: Record<StationId, Dock> = {
   washer: { x: 0, z: 1.3, yaw: -Math.PI / 2 },
 }
 /** Shoulder height used at each station. */
-export const LIFTS: Record<StationId, number> = { sort: 0.95, kitchen: 1.0, laundry: 0.85, washer: 1.15 }
+export const LIFTS: Record<StationId, number> = { sort: 1.18, kitchen: 1.0, laundry: 1.05, washer: 1.15 }
+/**
+ * Work surfaces the arm must stay above (station-local height and near edge).
+ * The fingertips may go down to an item; the elbow, wrist and palm may not.
+ */
+export const SURFACES: Partial<Record<StationId, { y: number; a: number }>> = {
+  sort: { y: 0.72, a: 0.36 },
+  laundry: { y: 0.74, a: 0.36 },
+  washer: { y: 0.76, a: 0.4 },
+}
 export const STATION_NAMES: Record<StationId, string> = {
   sort: 'sorting table',
   kitchen: 'kitchen',
@@ -64,8 +73,6 @@ export const SORT = {
     { color: 'green', a: 0.44, b: -0.33 },
     { color: 'blue', a: 0.44, b: 0.42 },
   ],
-  /** Where one hand sets a block down for the other hand to take. */
-  handover: { a: 0.45, b: 0 },
   binSize: 0.15,
   binWall: 0.07,
   binFloor: 0.006,
@@ -118,7 +125,7 @@ export const KITCHEN = {
     { a: 0.46, b: 0.48 },
   ],
   /** Slots in rack-local coordinates (a from the rack front). */
-  plateSlots: [-0.16, -0.08, 0],
+  plateSlots: [-0.18, -0.11, -0.04],
   plateSlotA: 0.18,
   cupSlots: [
     { a: 0.14, b: 0.08 },

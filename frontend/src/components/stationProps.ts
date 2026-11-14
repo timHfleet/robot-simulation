@@ -165,11 +165,6 @@ function buildSort(g: THREE.Group, pick: THREE.Object3D[]) {
     )
     g.add(bg)
   }
-  // A faint mark where hand-overs happen.
-  const ring = new THREE.Mesh(new THREE.RingGeometry(0.03, 0.036, 32), new THREE.MeshBasicMaterial({ color: '#94a3b8', transparent: true, opacity: 0.5 }))
-  ring.rotation.x = -Math.PI / 2
-  ring.position.set(SORT.handover.a, t.h + 0.001, SORT.handover.b)
-  g.add(ring)
 }
 
 interface KitchenParts {

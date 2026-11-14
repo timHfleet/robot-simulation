@@ -28,7 +28,8 @@ import {
   type V3,
 } from '../lib/kinematics'
 import { Button, Card, Segmented, Slider, Stat } from './ui'
-import { DOCKS, ITEMS, KITCHEN, STAGING, doorAngleFor, foldAngleFor, furnitureRects, lidAngleFor, toLocal, type StationId } from '../lib/stations'
+import { DOCKS, ITEMS, KITCHEN, STAGING, SURFACES, doorAngleFor, foldAngleFor, furnitureRects, lidAngleFor, toLocal, type StationId } from '../lib/stations'
+import { handPath, pathSteps, toRobotGoal, waistForMove, type HandGoal } from '../lib/motion'
 import { TASKS, planTask, type Act, type Mechanism, type PlanCtx, type TaskId } from '../lib/tasks'
 import { buildStations, type Mech, type Stations } from './stationProps'
 
@@ -826,6 +827,10 @@ export default function Humanoid() {
       binds: {} as Partial<Record<Side, { mech: Mechanism; a0: number; out0: number }>>,
       anims: [] as { key: 'door' | 'lowerRack' | 'upperRack' | 'lid'; from: number; to: number; t: number; dur: number }[],
       look: null as THREE.Vector3 | null,
+      /** The move being executed: joint targets for each small step of the hand's path. */
+      mq: null as null | { step: number; K: number; qs: Partial<Record<Side, number[][]>>; ws: number[] },
+      /** Per-joint speed scale so all joints of an arm start and finish a move together. */
+      vscale: { L: new Array(DOF).fill(1), R: new Array(DOF).fill(1) } as Record<Side, number[]>,
     }
     const prevPos = new THREE.Vector3()
     resetRef.current = () => {
@@ -884,6 +889,7 @@ export default function Humanoid() {
       sim.path = []
       sim.binds = {}
       sim.slow = { L: 1, R: 1 }
+      sim.mq = null
       sim.look = null
       const arms = { L: [...sim.qT.L], R: [...sim.qT.R] }
       const grip = { ...sim.gripT }
@@ -922,6 +928,21 @@ export default function Humanoid() {
     /** Robot-frame point to the frame of the torso turned by the waist. */
     const torsoFrame = (l: THREE.Vector3) => l.clone().sub(new THREE.Vector3(WAIST_X, 0, 0)).applyAxisAngle(new THREE.Vector3(0, 1, 0), -sim.waist).add(new THREE.Vector3(WAIST_X, 0, 0))
     const robotFrame = (p: THREE.Vector3) => p.clone().sub(new THREE.Vector3(sim.x, 0, sim.z)).applyAxisAngle(new THREE.Vector3(0, 1, 0), -sim.yaw)
+    /** Set an arm's joint targets, scaling each joint's speed so they all arrive together. */
+    const setQT = (side: Side, q: number[]) => {
+      const t = q.map((v, i) => Math.abs(v - sim.q[side][i]) / ARM[i].vmax)
+      const tm = Math.max(...t)
+      sim.vscale[side] = t.map((x) => (tm > 1e-6 ? Math.max(0.04, x / tm) : 1))
+      sim.qT[side] = [...q]
+    }
+    const applyStep = (j: number) => {
+      const mq = sim.mq!
+      for (const side of SIDES) {
+        const path = mq.qs[side]
+        if (path) setQT(side, path[j])
+      }
+      sim.waistT = mq.ws[j]
+    }
     const mechStation = (m: Mechanism): StationId => (m.kind === 'lid' ? 'washer' : m.kind === 'fold' ? 'laundry' : 'kitchen')
     const tcpWorld = (side: Side) => w.arms[side].tcp.getWorldPosition(new THREE.Vector3())
 
@@ -944,28 +965,39 @@ export default function Humanoid() {
           sim.liftT = a.h
           break
         case 'move': {
+          const lift = sim.liftT ?? sim.lift
+          const robot = { x: sim.x, z: sim.z, yaw: sim.yaw }
+          const w0 = sim.waistT
           // The waist turns so the working shoulder(s) are a comfortable distance from their targets.
-          const goals = SIDES.flatMap((side) => {
-            const g = a.arms[side]
-            return g && !Array.isArray(g) ? [{ side, p: robotFrame(g.pos) }] : []
-          })
-          if (goals.length) sim.waistT = waistFor(goals)
-          else if (a.arms.L && a.arms.R) sim.waistT = 0
-          const base = torsoBase(sim.liftT ?? sim.lift, sim.waistT)
+          const w1 = waistForMove(a.arms, robot, lift, w0)
+          const station = TASKS.find((x) => x.id === sim.task!.id)!.station
+          const surf = SURFACES[station]
+          const keepAbove = surf ? { y: surf.y, x: surf.a - toLocal(station, new THREE.Vector3(sim.x, 0, sim.z)).x } : null
+          const goals: Partial<Record<Side, HandGoal>> = {}
           for (const side of SIDES) {
-            const goal = a.arms[side]
-            if (!goal) continue
+            const g = a.arms[side]
+            if (g && !Array.isArray(g)) goals[side] = toRobotGoal(g, robot, lift, w1)
+          }
+          const K = Math.max(1, ...SIDES.filter((side) => goals[side]).map((side) => pathSteps(side, sim.qT[side], lift, w0, w1, goals[side]!)))
+          const qs: Partial<Record<Side, number[][]>> = {}
+          for (const side of SIDES) {
+            const g = a.arms[side]
+            if (!g) continue
             sim.slow[side] = a.slow ? 0.35 : 1
-            if (Array.isArray(goal)) {
-              sim.qT[side] = [...goal]
+            if (Array.isArray(g)) {
+              const q0 = sim.qT[side]
+              qs[side] = Array.from({ length: K }, (_, k) => q0.map((v, i) => v + ((g[i] - v) * (k + 1)) / K))
               continue
             }
-            const inv = (v: THREE.Vector3) => v.clone().applyAxisAngle(new THREE.Vector3(0, 1, 0), -sim.yaw)
-            const res = solveIK(side, sim.qT[side], base, robotFrame(goal.pos), { dir: inv(goal.approach), close: goal.close ? inv(goal.close) : null, rest: REST })
-            sim.qT[side] = res.q
-            sim.ik[side] = res
-            sim.look = goal.pos.clone()
+            // The hand travels in a straight line in small steps, each solved from the last,
+            // keeping the elbow, wrist and palm above the work surface.
+            const r = handPath(side, sim.qT[side], lift, w0, w1, goals[side]!, K, { rest: REST, keepAbove })
+            qs[side] = r.qs
+            sim.ik[side] = r.res
+            if (g.frame !== 'torso') sim.look = g.pos.clone()
           }
+          sim.mq = { step: 0, K, qs, ws: Array.from({ length: K }, (_, k) => w0 + ((w1 - w0) * (k + 1)) / K) }
+          applyStep(0)
           break
         }
         case 'grip':
@@ -1015,17 +1047,31 @@ export default function Humanoid() {
           return sim.path.length === 0
         case 'lift':
           return Math.abs(sim.lift - a.h) < 0.002 && Math.abs(sim.liftV) < 0.01
-        case 'move':
-          return SIDES.every((side) => {
-            if (!a.arms[side]) return true
-            let err = 0
-            let vel = 0
-            for (let i = 0; i < DOF; i++) {
-              err = Math.max(err, Math.abs(sim.q[side][i] - sim.qT[side][i]))
-              vel = Math.max(vel, Math.abs(sim.qv[side][i]))
-            }
-            return a.via ? err < 0.06 : err < 0.004 && vel < 0.05
-          }) && (a.via ? Math.abs(sim.waist - sim.waistT) < 0.06 : Math.abs(sim.waist - sim.waistT) < 0.004 && Math.abs(sim.waistV) < 0.05)
+        case 'move': {
+          const mq = sim.mq
+          if (!mq) return true
+          const last = mq.step === mq.K - 1
+          const tol = last && !a.via ? 0.004 : 0.06
+          const settled =
+            SIDES.every((side) => {
+              if (!mq.qs[side]) return true
+              let err = 0
+              let vel = 0
+              for (let i = 0; i < DOF; i++) {
+                err = Math.max(err, Math.abs(sim.q[side][i] - sim.qT[side][i]))
+                vel = Math.max(vel, Math.abs(sim.qv[side][i]))
+              }
+              return err < tol && (tol > 0.01 || vel < 0.05)
+            }) && Math.abs(sim.waist - sim.waistT) < tol && (tol > 0.01 || Math.abs(sim.waistV) < 0.05)
+          if (!settled) return false
+          if (!last) {
+            mq.step++
+            applyStep(mq.step)
+            return false
+          }
+          sim.mq = null
+          return true
+        }
         case 'grip':
           return Math.abs(sim.grip[a.side] - a.g) < 0.01
         case 'animate':
@@ -1159,7 +1205,9 @@ export default function Humanoid() {
       const k = keys.current
 
       // ---- Arm targets: joint sliders, or inverse kinematics ---------------
-      if (!sim.task) for (const side of SIDES) if (st.armMode === 'joint' || !activeSides(st.armSel).includes(side)) sim.qT[side] = [...st.arms[side]]
+      if (!sim.task)
+        for (const side of SIDES)
+          if ((st.armMode === 'joint' || !activeSides(st.armSel).includes(side)) && st.arms[side].some((v, i) => v !== sim.qT[side][i])) setQT(side, st.arms[side])
       if (st.armMode === 'ik' && !sim.task) {
         const tg = effTargets(st)
         sim.waistT = waistFor(activeSides(st.armSel).map((side) => ({ side, p: new THREE.Vector3(...tg[side]) })))
@@ -1171,7 +1219,7 @@ export default function Humanoid() {
           for (const side of activeSides(st.armSel)) {
             const res = solveIK(side, sim.qT[side], baseM, new THREE.Vector3(...tg[side]), { dir, rest: REST })
             sim.ik[side] = res
-            sim.qT[side] = res.q
+            setQT(side, res.q)
           }
         }
       } else sim.ikKey = ''
@@ -1275,7 +1323,7 @@ export default function Humanoid() {
         for (const side of SIDES) {
           const target = side === 'R' && waving ? waveQ : sim.qT[side]
           for (let i = 0; i < DOF; i++) {
-            ;[sim.q[side][i], sim.qv[side][i]] = servoStep(sim.q[side][i], sim.qv[side][i], target[i], ARM[i].vmax * sim.slow[side], ARM[i].amax, h)
+            ;[sim.q[side][i], sim.qv[side][i]] = servoStep(sim.q[side][i], sim.qv[side][i], target[i], ARM[i].vmax * sim.slow[side] * (waving && side === 'R' ? 1 : sim.vscale[side][i]), ARM[i].amax * (waving && side === 'R' ? 1 : sim.vscale[side][i]), h)
           }
           sim.grip[side] = approach(sim.grip[side], sim.task ? sim.gripT[side] : side === 'R' && waving ? 1 : st.grip[side], 1.5 * h)
         }
