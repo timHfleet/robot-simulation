@@ -41,6 +41,12 @@ npm run dev
 
 Then open http://localhost:5173.
 
+## Physics simulation
+
+`physics/` runs the same robot in [MuJoCo](https://mujoco.org) with real mass, torque limits, contact and friction. It generates MJCF and URDF models from the web app's joint table, checks them, and runs a pick-and-place and a dishwasher-opening task. See [physics/README.md](physics/README.md).
+
+![Physics demo](physics/media/demo.gif)
+
 ## Deploy
 
 `render.yaml` deploys to [Render](https://render.com) (**New → Blueprint**, pick this repo). The `Dockerfile` builds the front end and serves it with nginx (config in `deploy/`), with `/api/health` for Render's health check. Any static host also works: `npm run build` writes the site to `frontend/dist`.
@@ -57,4 +63,8 @@ frontend/src/
   lib/stations.ts            station layout, furniture, items, door/rack/lid/fold geometry
   lib/tasks.ts               task planners (sort, dishes, fold, wash)
   lib/math.ts                helpers and the trapezoidal motor profile
+physics/
+  build_models.py            ARM table -> MJCF + URDF models
+  check_models.py            model quality checks
+  demo.py                    MuJoCo pick-and-place and dishwasher demo
 ```
