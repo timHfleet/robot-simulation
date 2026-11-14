@@ -400,36 +400,53 @@ function planFold(ctx: PlanCtx, foldsDone: boolean): Act[] {
     const steps = 10
     /** The two named points, the one lying further to the robot's left first. */
     const onLeft = (a: string, b: string): [string, string] => (loc(a).dot(v) <= loc(b).dot(v) ? [a, b] : [b, a])
-    const sideFold = (s: Side, f: string, sign: number, label: string): Act[] => {
-      const p = loc(f)
-      p.y = pinchY
-      const p0 = centre.clone().addScaledVector(v, sign * 0.08)
-      const o = other(s)
+    /**
+     * Fold one side in with both hands, one near each end of the side seam (through the
+     * sleeve lying on it), so the fold line stays straight. sign -1 = the side on the
+     * robot's left. The hand on that side takes the far point, the other the near one.
+     */
+    const sideFold2 = (sign: number, label: string): Act[] => {
+      const leftIsL = onLeft('sideTopL', 'sideTopR')[0] === 'sideTopL'
+      const useL = sign < 0 ? leftIsL : !leftIsL
+      const [top, low] = useL ? ['sideTopL', 'sideLowL'] : ['sideTopR', 'sideLowR']
+      const far: Side = sign < 0 ? 'L' : 'R'
+      const near: Side = other(far)
+      const pf = loc(top)
+      const pn = loc(low)
+      pf.y = pn.y = pinchY
+      const p0 = centre.clone().addScaledVector(v, sign * 0.075)
+      const goal = (s: Side, p: THREE.Vector3, th: number) => at(s, over(p, p0, u, th))
       const list: Act[] = [
         { k: 'say', text: label },
-        { k: 'move', arms: { [o]: tuck(o) } },
-        { k: 'grip', side: s, g: 0.5 },
-        { k: 'move', arms: { [s]: at(s, up(W(p.x, p.y, p.z), 0.08)) } },
-        { k: 'move', arms: { [s]: at(s, W(p.x, p.y, p.z)) }, slow: true },
-        { k: 'grip', side: s, g: 0 },
-        { k: 'clothGrab', side: s, feature: f, stack: true },
+        { k: 'grip', side: 'L', g: 0.5 },
+        { k: 'grip', side: 'R', g: 0.5 },
+        { k: 'move', arms: { [far]: at(far, up(W(pf.x, pf.y, pf.z), 0.08)), [near]: at(near, up(W(pn.x, pn.y, pn.z), 0.08)) } },
+        { k: 'move', arms: { [far]: at(far, W(pf.x, pf.y, pf.z)), [near]: at(near, W(pn.x, pn.y, pn.z)) }, slow: true },
+        { k: 'grip', side: 'L', g: 0 },
+        { k: 'grip', side: 'R', g: 0 },
+        { k: 'clothGrab', side: far, feature: top, stack: true },
+        { k: 'clothGrab', side: near, feature: low, stack: true },
       ]
-      for (let i = 1; i <= steps; i++) list.push({ k: 'move', arms: { [s]: at(s, over(p, p0, u, (Math.PI * i) / steps)) }, via: i < steps, slow: true })
+      for (let i = 1; i <= steps; i++) {
+        const th = (Math.PI * i) / steps
+        list.push({ k: 'move', arms: { [far]: goal(far, pf, th), [near]: goal(near, pn, th) }, via: i < steps, slow: true })
+      }
       list.push(
-        { k: 'grip', side: s, g: 0.5 },
-        { k: 'clothRelease', side: s },
-        { k: 'move', arms: { [s]: at(s, up(over(p, p0, u, Math.PI), 0.1)) }, via: true },
-        { k: 'move', arms: { [s]: tuck(s) } },
+        { k: 'grip', side: 'L', g: 0.5 },
+        { k: 'grip', side: 'R', g: 0.5 },
+        { k: 'clothRelease', side: 'L' },
+        { k: 'clothRelease', side: 'R' },
+        { k: 'move', arms: { [far]: at(far, up(over(pf, p0, u, Math.PI), 0.1)), [near]: at(near, up(over(pn, p0, u, Math.PI), 0.1)) }, via: true },
+        tuckHands(),
         { k: 'wait', t: 0.4 },
       )
       return list
     }
-    // Each fold is planned when it starts, from where the cloth lies after the one before.
     const list: Act[] = [
-      // Each side is taken at the side seam halfway up, through the sleeve lying on it.
+      // Each side is folded with both hands along a straight line, as in two-armed folding robots.
       // (The shirt may lie face down, so each hand takes the side that lies on its side.)
-      { k: 'plan', make: () => sideFold('L', onLeft('sideL', 'sideR')[0], -1, 'Left hand folds the left side and sleeve in') },
-      { k: 'plan', make: () => sideFold('R', onLeft('sideL', 'sideR')[1], 1, 'Right hand folds the right side and sleeve in') },
+      { k: 'plan', make: () => sideFold2(-1, 'Both hands fold the left side and sleeve in') },
+      { k: 'plan', make: () => sideFold2(1, 'Both hands fold the right side and sleeve in') },
     ]
     // Bottom up: both hands pinch the hem through all its layers and lay it over the middle.
     list.push({
@@ -505,23 +522,28 @@ function planFold(ctx: PlanCtx, foldsDone: boolean): Act[] {
       }
       const both = (a: number, h: number, half = 0.13) => ({ L: at('L', W(a, T0 + h, -half)), R: at('R', W(a, T0 + h, half)) })
       const list: Act[] = [
-        { k: 'say', text: 'Spreading it out: picking it up by the shoulders' },
+        { k: 'say', text: 'Picking it up by one shoulder and letting it hang' },
         // Square the torso up, then keep it there: with a hand on the shirt, turning the waist
-        // would drag the shirt, and both shoulders of the shirt are in front of the robot.
+        // would swing the shirt around.
         { k: 'move', arms: { L: TUCK_Q, R: TUCK_Q } },
-        // The first hand holds its shoulder where it lies; the second hand's target is
-        // measured only when it sets off, then both lift together.
         ...grab('L', fl, true),
-        { k: 'plan', make: () => grab('R', fr, true) },
-        // Torso all the way up (lifting the shirt with it), so the hands can hold it clear of the
-        // table below the shoulders.
+        // Torso up and the hand high: the shirt hangs from one shoulder and untwists.
         { k: 'lift', h: 1.18 },
-        { k: 'move', arms: both(0.45, 0.36), slow: true },
-        { k: 'say', text: 'Letting it hang open, then laying it down flat' },
-        { k: 'wait', t: 1.5 },
-        // Over the near edge of where it will lie, then torso down until the hem just
-        // touches the table (the shirt hangs about 26 cm below the hands)...
-        { k: 'move', arms: both(0.38, 0.4), slow: true },
+        { k: 'move', arms: { L: { ...at('L', W(0.5, T0 + 0.42, -0.08)), keepWaist: true } }, slow: true },
+        { k: 'wait', t: 1.2 },
+        // The other hand takes the other shoulder from the hanging shirt, in mid-air
+        // (measured as it sets off and again just before it closes, since the shirt sways).
+        { k: 'say', text: 'Catching the other shoulder in the air' },
+        { k: 'plan', make: () => grab('R', fr, true) },
+        // Pull the shoulders apart until the top edge is taut, so the shirt hangs open and flat.
+        { k: 'say', text: 'Stretching it out and flinging it flat' },
+        { k: 'move', arms: both(0.45, 0.38, 0.14), slow: true },
+        { k: 'wait', t: 0.6 },
+        // Fling: swing it up and forward, then back and down, so it opens in the air.
+        { k: 'move', arms: both(0.6, 0.44, 0.14) },
+        { k: 'move', arms: both(0.38, 0.4, 0.14) },
+        { k: 'wait', t: 0.4 },
+        // Torso down until the hem just touches the table (the shirt hangs about 26 cm below the hands)...
         { k: 'lift', h: LIFTS[st] },
       ]
       // ...then forward exactly as fast as down: the cloth lays out flat behind the hands,
@@ -530,7 +552,7 @@ function planFold(ctx: PlanCtx, foldsDone: boolean): Act[] {
       const [a0, h0, a1, h1] = [0.38, 0.4 - (1.18 - LIFTS[st]), 0.64, 0.018]
       for (let i = 1; i <= n; i++) {
         const t = i / n
-        list.push({ k: 'move', arms: both(a0 + (a1 - a0) * t, h0 + (h1 - h0) * t), via: i < n, slow: true })
+        list.push({ k: 'move', arms: both(a0 + (a1 - a0) * t, h0 + (h1 - h0) * t, 0.14), via: i < n, slow: true })
       }
       list.push(
         { k: 'grip', side: 'L', g: 0.5 },
