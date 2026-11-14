@@ -33,6 +33,10 @@ const LAYER_GRIP = 0.8
 const PINCH_R = 0.045
 /** How far from the fingertips the hand can still catch an edge of cloth. */
 const REACH = 0.09
+/** A named-point grasp catches the cloth only if the fingertips are this close to it. */
+const GRASP_TOL = 0.04
+/** A stack grasp holds every layer within this distance of the point (the width of the gripper's hold on an edge). */
+const STACK_R = 0.035
 
 export interface ClothParts {
   mesh: THREE.Mesh
@@ -42,6 +46,22 @@ export interface ClothParts {
   mask: (u: number, v: number) => boolean
 }
 
+/** Named points on the shirt, as (distance up from the hem, across from the centre) in metres. */
+export const FEATURES = {
+  shoulderL: [0.255, -0.14],
+  shoulderR: [0.255, 0.14],
+  sleeveL: [0.19, -0.28],
+  sleeveR: [0.19, 0.28],
+  sideL: [0.12, -0.15],
+  sideR: [0.12, 0.15],
+  hemL: [0.012, -0.14],
+  hemR: [0.012, 0.14],
+  hemInL: [0.015, -0.065],
+  hemInR: [0.015, 0.065],
+  collar: [0.27, 0],
+} as const
+export type Feature = keyof typeof FEATURES
+
 export interface Cloth {
   /** Advance by dt seconds. `hands`: station-local fingertip points of hands holding the cloth. */
   step(dt: number, hands: Partial<Record<'L' | 'R', THREE.Vector3>>): void
@@ -49,8 +69,15 @@ export interface Cloth {
   pinch(side: 'L' | 'R', tcp: THREE.Vector3): number
   /** Let go. */
   release(side: 'L' | 'R'): void
-  /** Lay the shirt out flat again. */
-  reset(): void
+  /** Put the shirt back: flat, or (by default) dropped in a crumpled heap, different each time. */
+  reset(crumpled?: boolean): void
+  /** Station-local position of a named point on the shirt (shoulders, sleeves, hem, collar). */
+  feature(name: Feature): THREE.Vector3
+  /**
+   * Pinch a named point with the fingertips (station-local hand position). `stack`: pinch
+   * through every layer lying at that spot, as fingers closing on a folded edge do.
+   */
+  grabFeature(side: 'L' | 'R', name: Feature, tcp: THREE.Vector3, stack?: boolean): number
   /** Is the cloth at rest (nothing held, nothing moving)? */
   sleeping(): boolean
   /** Debugging: the nearest cloth particle to a station-local point. */
@@ -94,6 +121,24 @@ export function createCloth(parts: ClothParts): Cloth {
       rest[k * 3 + 2] = parts.flat[f + 2]
     }
 
+  // The particle nearest each named point.
+  const featureIdx = {} as Record<Feature, number>
+  for (const name of Object.keys(FEATURES) as Feature[]) {
+    const [fa, fb] = FEATURES[name]
+    const x = LAUNDRY.shirt.hemA + fa
+    let best = -1
+    let bd = Infinity
+    for (let k = 0; k < N; k++) {
+      if (!active[k]) continue
+      const d = Math.hypot(rest[k * 3] - x, rest[k * 3 + 2] - fb)
+      if (d < bd) {
+        bd = d
+        best = k
+      }
+    }
+    featureIdx[name] = best
+  }
+
   // Distance constraints: [a, b, rest length, stiffness].
   const ca: number[] = []
   const cb: number[] = []
@@ -136,7 +181,8 @@ export function createCloth(parts: ClothParts): Cloth {
   const _h = new THREE.Vector3()
   let asleep = false
 
-  const reset = () => {
+  let drops = 0
+  const reset = (crumpled = true) => {
     pos.set(rest)
     prev.set(rest)
     for (let k = 0; k < N; k++) inv[k] = active[k] ? 1 : 0
@@ -144,7 +190,57 @@ export function createCloth(parts: ClothParts): Cloth {
     pins.R = []
     asleep = false
     still = 0
+    if (crumpled) crumple(drops++)
     writeMesh()
+  }
+
+  /**
+   * Make a heap the way a shirt really lands in one: pick it up by one point, let it
+   * hang, swing it a little and let go. Simulated before the scene is shown; each
+   * reset picks a different point and swing.
+   */
+  const crumple = (n: number) => {
+    const holds: Feature[] = ['collar', 'hemR', 'sleeveL', 'shoulderR', 'hemL', 'sleeveR']
+    const hold = holds[n % holds.length]
+    const k0 = featureIdx[hold]
+    const start = new THREE.Vector3(pos[k0 * 3], pos[k0 * 3 + 1], pos[k0 * 3 + 2])
+    const ang = n * 2.4
+    const top = new THREE.Vector3(0.58, LAUNDRY.table.h + 0.42, 0)
+    const swing = top.clone().add(new THREE.Vector3(Math.cos(ang) * 0.06, -0.25, Math.sin(ang) * 0.1))
+    const hand = new THREE.Vector3()
+    pins.R = neighbours(k0).map((k) => ({ k, off: [pos[k * 3] - start.x, pos[k * 3 + 1] - start.y, pos[k * 3 + 2] - start.z] as [number, number, number] }))
+    for (const p of pins.R) inv[p.k] = 0
+    const run = (from: THREE.Vector3, to: THREE.Vector3, steps: number) => {
+      for (let i = 1; i <= steps; i++) {
+        const t = i / steps
+        hand.lerpVectors(from, to, t * t * (3 - 2 * t))
+        lastHands.R = hand.clone()
+        substep({ R: hand }, 1, STEP)
+      }
+    }
+    lastHands.R = start.clone()
+    run(start, top, 70) // lift: the shirt hangs from that point
+    run(top, top, 50)
+    run(top, swing, 35) // swing down and drop
+    for (const p of pins.R) inv[p.k] = 1
+    pins.R = []
+    for (let i = 0; i < 480; i++) substep({}, 1, STEP)
+    asleep = true
+  }
+
+  /** A particle and its neighbours in the fabric (a fingertip-sized patch). */
+  const neighbours = (k0: number) => {
+    const r0 = Math.floor(k0 / W)
+    const c0 = k0 % W
+    const out: number[] = []
+    for (let dr = -1; dr <= 1; dr++)
+      for (let dc = -1; dc <= 1; dc++) {
+        const r = r0 + dr
+        const c = c0 + dc
+        if (r < 0 || r > SU || c < 0 || c > SV) continue
+        if (active[id(r, c)]) out.push(id(r, c))
+      }
+    return out
   }
 
   // Spatial hash for self-collision.
@@ -165,15 +261,18 @@ export function createCloth(parts: ClothParts): Cloth {
     const lim = onTable ? floorY : 0.003
     if (pos[k * 3 + 1] < lim) {
       pos[k * 3 + 1] = lim
-      // Friction: cotton on wood sticks unless it's pulled firmly (static), then drags (kinetic).
+      // Friction, applied to position (as position-based dynamics does): cotton on wood stays
+      // exactly where it lies unless it's pulled firmly, then slides with the excess.
       const sx = x - prev[k * 3]
       const sz = z - prev[k * 3 + 2]
-      if (sx * sx + sz * sz < stick * stick) {
-        prev[k * 3] = x
-        prev[k * 3 + 2] = z
+      const d = Math.hypot(sx, sz)
+      if (d < stick) {
+        pos[k * 3] = prev[k * 3]
+        pos[k * 3 + 2] = prev[k * 3 + 2]
       } else {
-        prev[k * 3] = x - sx * 0.15
-        prev[k * 3 + 2] = z - sz * 0.15
+        const keep = 1 - stick / d
+        pos[k * 3] = prev[k * 3] + sx * keep
+        pos[k * 3 + 2] = prev[k * 3 + 2] + sz * keep
       }
     }
   }
@@ -392,6 +491,34 @@ export function createCloth(parts: ClothParts): Cloth {
     },
     reset,
     sleeping: () => asleep,
+    feature: (name) => {
+      const k = featureIdx[name]
+      return new THREE.Vector3(pos[k * 3], pos[k * 3 + 1], pos[k * 3 + 2])
+    },
+    grabFeature: (side, name, tcp, stack = false) => {
+      for (const p of pins[side]) inv[p.k] = 1
+      pins[side] = []
+      const k0 = featureIdx[name]
+      // The fingers only catch the cloth if they are actually at it.
+      if (Math.hypot(pos[k0 * 3] - tcp.x, pos[k0 * 3 + 1] - tcp.y, pos[k0 * 3 + 2] - tcp.z) > GRASP_TOL) return 0
+      const set = new Set(neighbours(k0))
+      if (stack) {
+        // Every layer lying under or over that spot (a folded edge is several layers thick).
+        const x = pos[k0 * 3]
+        const z = pos[k0 * 3 + 2]
+        for (let k = 0; k < N; k++) {
+          if (!active[k]) continue
+          if (Math.hypot(pos[k * 3] - x, pos[k * 3 + 2] - z) < STACK_R && Math.abs(pos[k * 3 + 1] - pos[k0 * 3 + 1]) < 0.04) set.add(k)
+        }
+      }
+      pins[side] = [...set].map((k) => ({ k, off: [pos[k * 3] - tcp.x, pos[k * 3 + 1] - tcp.y, pos[k * 3 + 2] - tcp.z] as [number, number, number] }))
+      for (const p of pins[side]) inv[p.k] = 0
+      asleep = false
+      still = 0
+      if (import.meta.env.DEV)
+        console.debug(`[cloth] ${side} grabs ${name}: ${pins[side].length} particles, ${(Math.hypot(pos[k0 * 3] - tcp.x, pos[k0 * 3 + 1] - tcp.y, pos[k0 * 3 + 2] - tcp.z) * 1000).toFixed(0)} mm from the fingertips`)
+      return pins[side].length
+    },
     probe: (x: number, z: number) => {
       let best = 1e9
       let at: number[] = []

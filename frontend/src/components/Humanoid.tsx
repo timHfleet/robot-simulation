@@ -29,12 +29,12 @@ import {
   type V3,
 } from '../lib/kinematics'
 import { Button, Card, Segmented, Slider, Stat } from './ui'
-import { DOCKS, ITEMS, KITCHEN, STAGING, doorAngleFor, foldAngleFor, furnitureRects, lidAngleFor, toLocal, type StationId } from '../lib/stations'
+import { DOCKS, ITEMS, KITCHEN, STAGING, doorAngleFor, foldAngleFor, furnitureRects, lidAngleFor, toLocal, toWorld, type StationId } from '../lib/stations'
 import { handPath, keepOutsFor, pathSteps, toRobotGoal, waistForMove, type HandGoal } from '../lib/motion'
 import { TASKS, planTask, type Act, type Mechanism, type PlanCtx, type TaskId } from '../lib/tasks'
 import { buildStations, type Mech, type Stations } from './stationProps'
 import type { Physics, PhysicsStats } from './physicsWorld'
-import { createCloth } from './clothSim'
+import { createCloth, type Feature } from './clothSim'
 
 // ---------------------------------------------------------------------------
 // Geometry (metres). Robot frame: x forward, y up, z to the robot's right.
@@ -815,6 +815,7 @@ export default function Humanoid() {
     startPhysics()
     // The shirt is simulated cloth: the hands pinch it and it drapes and folds under gravity.
     const cloth = createCloth(w.stations.parts.cloth)
+    const CLOTH_FRAME = 16 / 120
     w.stations.useClothPhysics()
     if (import.meta.env.DEV) Object.assign(window, { __world: w, __cloth: cloth })
     /** Items let go of, to check where they ended up once they settle. */
@@ -859,6 +860,7 @@ export default function Humanoid() {
       liftT: null as number | null,
       slow: { L: 1, R: 1 } as Record<Side, number>,
       binds: {} as Partial<Record<Side, { mech: Mechanism; a0: number; out0: number }>>,
+      waitUntil: 0,
       anims: [] as { key: 'door' | 'lowerRack' | 'upperRack' | 'lid'; from: number; to: number; t: number; dur: number }[],
       look: null as THREE.Vector3 | null,
       /** The move being executed: joint targets for each small step of the hand's path. */
@@ -897,6 +899,10 @@ export default function Humanoid() {
         return { pos: o.getWorldPosition(new THREE.Vector3()), quat: o.getWorldQuaternion(new THREE.Quaternion()), where: S.where.get(id) ?? 'home' }
       },
       ids: (kind) => ITEMS.filter((d) => d.kind === kind).map((d) => d.id),
+      cloth: (f) => {
+        const p = cloth.feature(f as Feature)
+        return toWorld('laundry', p.x, p.y, p.z)
+      },
     })
     const stagingOf = (st: StationId) => {
       const d = DOCKS[st]
@@ -1101,6 +1107,28 @@ export default function Humanoid() {
         case 'set':
           S.mech[a.key] = a.value
           break
+        case 'clothGrab': {
+          const tcp = toLocal('laundry', tcpWorld(a.side))
+          if (import.meta.env.DEV)
+            console.debug(`[clothGrab] ${a.side} ${a.feature}: hand ${tcp.toArray().map((v) => v.toFixed(3))}, point ${cloth.feature(a.feature as Feature).toArray().map((v) => v.toFixed(3))}, q ${sim.q[a.side].map((v) => Math.round(deg(v)))}`)
+          if (!cloth.grabFeature(a.side, a.feature as Feature, tcp, a.stack)) say(`Missed the shirt: the ${a.side === 'L' ? 'left' : 'right'} hand couldn't reach it`)
+          break
+        }
+        case 'clothRelease':
+          cloth.release(a.side)
+          break
+        case 'wait':
+          sim.waitUntil = sim.time + a.t
+          break
+        case 'plan': {
+          // Plan the next steps from the scene as it is now, and run them next.
+          const T = sim.task!
+          T.acts.splice(T.i + 1, 0, ...a.make())
+          break
+        }
+        case 'clothFolded':
+          S.mech.folds = [Math.PI, Math.PI, Math.PI]
+          break
       }
     }
     const finished = (a: Act) => {
@@ -1139,6 +1167,8 @@ export default function Humanoid() {
           return Math.abs(sim.grip[a.side] - a.g) < 0.01
         case 'animate':
           return !sim.anims.some((x) => x.key === a.key)
+        case 'wait':
+          return sim.time >= sim.waitUntil
         default:
           return true
       }
@@ -1260,7 +1290,10 @@ export default function Humanoid() {
     const baseM = new THREE.Matrix4()
 
     const loop = () => {
-      const dt = Math.min(0.5, Math.min(0.25, clock.getDelta()) * (sim.task ? settingsRef.current.speed : 1))
+      // While the cloth is moving, simulated time advances at most 16 cloth steps (1/120 s each)
+      // per frame: on a slow machine or at high task speed the whole scene slows down rather than
+      // the cloth taking coarse steps (which would let folded layers pass through each other).
+      const dt = Math.min(cloth.sleeping() ? 0.5 : CLOTH_FRAME, Math.min(0.25, clock.getDelta()) * (sim.task ? settingsRef.current.speed : 1))
       const steps = Math.max(1, Math.ceil(dt / 0.01))
       const h = dt / steps
       const t = clock.elapsedTime

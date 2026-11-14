@@ -27,7 +27,7 @@ export type TaskId = 'sort' | 'dishes' | 'fold' | 'wash'
 export const TASKS: { id: TaskId; label: string; station: StationId; blurb: string }[] = [
   { id: 'sort', label: 'Sort blocks', station: 'sort', blurb: 'Pick each block and drop it in the bin of its colour, turning at the waist to reach across.' },
   { id: 'dishes', label: 'Load dishwasher', station: 'kitchen', blurb: 'Open the door, pull out the racks, load plates and cups, close up and start it.' },
-  { id: 'fold', label: 'Fold shirt', station: 'laundry', blurb: 'Fold both sides of the T-shirt in, then the bottom up with both hands.' },
+  { id: 'fold', label: 'Fold shirt', station: 'laundry', blurb: 'Spread the crumpled T-shirt flat by its shoulders, fold both sides in, then the bottom up with both hands.' },
   { id: 'wash', label: 'Wash clothes', station: 'washer', blurb: 'Open the lid, move the clothes from the basket into the drum, close it and press start.' },
 ]
 
@@ -64,11 +64,20 @@ export type Act =
   | { k: 'unbind'; side: Side }
   | { k: 'animate'; key: 'door' | 'lowerRack' | 'upperRack' | 'lid'; to: number; dur: number }
   | { k: 'set'; key: 'dishOn' | 'washOn'; value: boolean }
+  /** Pinch a named point of the shirt under the hand (`stack`: through all the layers there). */
+  | { k: 'clothGrab'; side: Side; feature: string; stack?: boolean }
+  | { k: 'clothRelease'; side: Side }
+  | { k: 'wait'; t: number }
+  /** Plan the next steps now, from what the scene looks like at this point in the task. */
+  | { k: 'plan'; make: () => Act[] }
+  | { k: 'clothFolded' }
 
 export interface PlanCtx {
   /** Item world pose and where it is ('home', 'bin', 'rack', 'drum', ...). */
   item: (id: string) => { pos: THREE.Vector3; quat: THREE.Quaternion; where: string }
   ids: (kind: string) => string[]
+  /** World position of a named point on the shirt, as the head camera sees it now. */
+  cloth: (feature: string) => THREE.Vector3
 }
 
 /** Arms hanging beside the body (used before driving off and at the end). */
@@ -352,76 +361,190 @@ function planDishes(ctx: PlanCtx): Act[] {
 // ---------------------------------------------------------------------------
 // Fold the shirt
 // ---------------------------------------------------------------------------
-function planFold(foldsDone: boolean): Act[] {
+function planFold(ctx: PlanCtx, foldsDone: boolean): Act[] {
   if (foldsDone) return []
   const st: StationId = 'laundry'
-  const fwd = dirWorld(st, 1, 0, 0)
-  const right = dirWorld(st, 0, 0, 1)
+  const T0 = LAUNDRY.table.h
+  const pinchY = T0 + 0.016
+  const L = (p: THREE.Vector3) => toLocal(st, p)
+  const W = (a: number, y: number, b: number) => toWorld(st, a, y, b)
+  const at = (side: Side, p: THREE.Vector3) => T(p, downish(st, side, p, 55))
   const acts = arrive(st, 'Folding the shirt')
-  const steps = 10
-  const pinchY = LAUNDRY.table.h + 0.016
-  /** Point on the fold arc: theta 0 = at the pinch, pi = folded over. */
-  const arc = (k: number, pa: number, pb: number, th: number) => {
-    const f = LAUNDRY.folds[k]
-    const n = new THREE.Vector3(...f.n)
-    const d = (pa - f.point[0]) * n.x + (pb - f.point[2]) * n.z
-    const p = new THREE.Vector3(pa, pinchY, pb).addScaledVector(n, -d)
-    p.addScaledVector(n, d * Math.cos(th)).addScaledVector(UP, d * Math.sin(th) + 0.02 * Math.sin(th / 2))
-    return toWorld(st, p.x, p.y, p.z)
-  }
-  // A cloth pinch works with the fingers turned any way, so only their pointing direction is set.
-  const at = (side: Side, p: THREE.Vector3, _close?: THREE.Vector3) => T(p, downish(st, side, p, 55))
-  const sideFold = (k: number, side: Side, label: string): Act[] => {
-    const [pa, pb] = LAUNDRY.folds[k].pinch
+
+  // 2. Fold, planned from where the shirt actually lies once it has been spread.
+  const folds = (): Act[] => {
+    const loc = (f: string) => L(ctx.cloth(f))
+    const mS = loc('shoulderL').add(loc('shoulderR')).multiplyScalar(0.5)
+    const mH = loc('hemInL').add(loc('hemInR')).multiplyScalar(0.5)
+    mS.y = mH.y = pinchY
+    // The shirt's own axes on the table: u from hem to collar, v across it (toward +b).
+    const u = mS.clone().sub(mH).setY(0).normalize()
+    const v = new THREE.Vector3(-u.z, 0, u.x)
+    if (v.z < 0) v.negate()
+    const centre = mS.clone().add(mH).multiplyScalar(0.5)
+    /**
+     * Hand position carrying point p over the line through p0 along `axis`, at angle th (0 to
+     * pi). The arc is a little shorter than the cloth between the line and the hand, so the
+     * flap is carried with some slack instead of pulling the rest of the shirt across the table.
+     */
+    const over = (p: THREE.Vector3, p0: THREE.Vector3, axis: THREE.Vector3, th: number) => {
+      const r = p.clone().sub(p0).setY(0)
+      const along = axis.clone().multiplyScalar(r.dot(axis))
+      const w = r.clone().sub(along)
+      const d = w.length()
+      const R = th > 0 ? Math.max(0.02, d - 0.015) : d
+      const q = p0.clone().add(along).addScaledVector(w, (Math.cos(th) * R) / Math.max(d, 1e-6))
+      q.y = pinchY + R * Math.sin(th)
+      return W(q.x, q.y, q.z)
+    }
+    const steps = 10
+    /** The two named points, the one lying further to the robot's left first. */
+    const onLeft = (a: string, b: string): [string, string] => (loc(a).dot(v) <= loc(b).dot(v) ? [a, b] : [b, a])
+    const sideFold = (s: Side, f: string, sign: number, label: string): Act[] => {
+      const p = loc(f)
+      p.y = pinchY
+      const p0 = centre.clone().addScaledVector(v, sign * 0.08)
+      const o = other(s)
+      const list: Act[] = [
+        { k: 'say', text: label },
+        { k: 'move', arms: { [o]: tuck(o) } },
+        { k: 'grip', side: s, g: 0.5 },
+        { k: 'move', arms: { [s]: at(s, up(W(p.x, p.y, p.z), 0.08)) } },
+        { k: 'move', arms: { [s]: at(s, W(p.x, p.y, p.z)) }, slow: true },
+        { k: 'grip', side: s, g: 0 },
+        { k: 'clothGrab', side: s, feature: f, stack: true },
+      ]
+      for (let i = 1; i <= steps; i++) list.push({ k: 'move', arms: { [s]: at(s, over(p, p0, u, (Math.PI * i) / steps)) }, via: i < steps, slow: true })
+      list.push(
+        { k: 'grip', side: s, g: 0.5 },
+        { k: 'clothRelease', side: s },
+        { k: 'move', arms: { [s]: at(s, up(over(p, p0, u, Math.PI), 0.1)) }, via: true },
+        { k: 'move', arms: { [s]: tuck(s) } },
+        { k: 'wait', t: 0.4 },
+      )
+      return list
+    }
+    // Each fold is planned when it starts, from where the cloth lies after the one before.
     const list: Act[] = [
-      { k: 'say', text: label },
-      { k: 'move', arms: { [other(side)]: tuck(other(side)) } },
-      { k: 'grip', side, g: 0.35 },
-      { k: 'move', arms: { [side]: at(side, up(arc(k, pa, pb, 0), 0.08), fwd) } },
-      { k: 'move', arms: { [side]: at(side, arc(k, pa, pb, 0), fwd) }, slow: true },
-      { k: 'grip', side, g: 0 },
-      { k: 'bind', side, mech: { kind: 'fold', fold: k } },
+      // Each side is taken at the side seam halfway up, through the sleeve lying on it.
+      // (The shirt may lie face down, so each hand takes the side that lies on its side.)
+      { k: 'plan', make: () => sideFold('L', onLeft('sideL', 'sideR')[0], -1, 'Left hand folds the left side and sleeve in') },
+      { k: 'plan', make: () => sideFold('R', onLeft('sideL', 'sideR')[1], 1, 'Right hand folds the right side and sleeve in') },
     ]
-    for (let i = 1; i <= steps; i++) list.push({ k: 'move', arms: { [side]: at(side, arc(k, pa, pb, (Math.PI * i) / steps), fwd) }, via: i < steps, slow: true })
-    list.push(
-      { k: 'grip', side, g: 0.35 },
-      { k: 'unbind', side },
-      { k: 'move', arms: { [side]: at(side, up(arc(k, pa, pb, Math.PI), 0.1), fwd) }, via: true },
-      { k: 'move', arms: { [side]: tuck(side) } },
-    )
+    // Bottom up: both hands pinch the hem through all its layers and lay it over the middle.
+    list.push({
+      k: 'plan',
+      make: () => {
+        const [fl, fr] = onLeft('hemInL', 'hemInR')
+        const hl = loc(fl)
+        const hr = loc(fr)
+        hl.y = hr.y = pinchY
+        // Fold line halfway between the hem and the shoulders as they lie now.
+        const mid = loc('shoulderL').add(loc('shoulderR')).add(hl).add(hr).multiplyScalar(0.25)
+        mid.y = pinchY
+        const b: Act[] = [
+          { k: 'say', text: 'Both hands fold the bottom up' },
+          // Lower the torso: laying the hem down on the far side is a long, low reach.
+          { k: 'lift', h: 0.9 },
+          { k: 'grip', side: 'L', g: 0.5 },
+          { k: 'grip', side: 'R', g: 0.5 },
+          { k: 'move', arms: { L: at('L', up(W(hl.x, hl.y, hl.z), 0.08)), R: at('R', up(W(hr.x, hr.y, hr.z), 0.08)) } },
+          { k: 'move', arms: { L: at('L', W(hl.x, hl.y, hl.z)), R: at('R', W(hr.x, hr.y, hr.z)) }, slow: true },
+          { k: 'grip', side: 'L', g: 0 },
+          { k: 'grip', side: 'R', g: 0 },
+          { k: 'clothGrab', side: 'L', feature: fl, stack: true },
+          { k: 'clothGrab', side: 'R', feature: fr, stack: true },
+        ]
+        for (let i = 1; i <= steps; i++) {
+          const th = (Math.PI * i) / steps
+          b.push({ k: 'move', arms: { L: at('L', over(hl, mid, v, th)), R: at('R', over(hr, mid, v, th)) }, via: i < steps, slow: true })
+        }
+        b.push(
+          { k: 'grip', side: 'L', g: 0.5 },
+          { k: 'grip', side: 'R', g: 0.5 },
+          { k: 'clothRelease', side: 'L' },
+          { k: 'clothRelease', side: 'R' },
+          { k: 'move', arms: { L: at('L', up(over(hl, mid, v, Math.PI), 0.1)), R: at('R', up(over(hr, mid, v, Math.PI), 0.1)) }, via: true },
+          tuckHands(),
+          { k: 'clothFolded' },
+          { k: 'say', text: 'Shirt folded' },
+        )
+        return b
+      },
+    })
     return list
   }
-  acts.push(
-    ...sideFold(0, 'L', 'Left hand folds the left side and sleeve in'),
-    ...sideFold(1, 'R', 'Right hand folds the right side and sleeve in'),
-  )
-  // Bottom up, both hands together on the hem corners.
-  const [pa, pb] = LAUNDRY.folds[2].pinch
-  const both = (th: number, lift = 0) => ({
-    L: at('L', up(arc(2, pa, -pb, th), lift), right),
-    R: at('R', up(arc(2, pa, pb, th), lift), right),
+
+  // 1. Spread it: find the shoulders, pick the shirt up by them so it hangs open under
+  //    its own weight, then lay it down across the table hem first, drawing it out flat.
+  acts.push({
+    k: 'plan',
+    make: () => {
+      const sl = ctx.cloth('shoulderL')
+      const sr = ctx.cloth('shoulderR')
+      // Each hand takes the shoulder on its own side (the shirt may end up face down).
+      const [fl, fr] = L(sl).z <= L(sr).z ? ['shoulderL', 'shoulderR'] : ['shoulderR', 'shoulderL']
+      // While one hand holds the shirt, the other reaches without turning the waist (turning
+      // it would swing the holding hand, and the shirt, across the table).
+      const grab = (side: Side, f: string, holding = false): Act[] => {
+        const p = ctx.cloth(f).addScaledVector(UP, 0.006)
+        const go = (q: THREE.Vector3) => ({ ...at(side, q), keepWaist: holding })
+        return [
+          { k: 'grip', side, g: 0.5 },
+          { k: 'move', arms: { [side]: go(up(p, 0.09)) } },
+          {
+            // Look again just before going down: cloth shifts.
+            k: 'plan',
+            make: () => [
+              { k: 'move', arms: { [side]: go(ctx.cloth(f).addScaledVector(UP, 0.006)) }, slow: true },
+              { k: 'grip', side, g: 0 },
+              { k: 'clothGrab', side, feature: f },
+            ],
+          },
+        ]
+      }
+      const both = (a: number, h: number, half = 0.13) => ({ L: at('L', W(a, T0 + h, -half)), R: at('R', W(a, T0 + h, half)) })
+      const list: Act[] = [
+        { k: 'say', text: 'Spreading it out: picking it up by the shoulders' },
+        // Square the torso up, then keep it there: with a hand on the shirt, turning the waist
+        // would drag the shirt, and both shoulders of the shirt are in front of the robot.
+        { k: 'move', arms: { L: TUCK_Q, R: TUCK_Q } },
+        // The first hand holds its shoulder where it lies; the second hand's target is
+        // measured only when it sets off, then both lift together.
+        ...grab('L', fl, true),
+        { k: 'plan', make: () => grab('R', fr, true) },
+        // Torso all the way up (lifting the shirt with it), so the hands can hold it clear of the
+        // table below the shoulders.
+        { k: 'lift', h: 1.18 },
+        { k: 'move', arms: both(0.45, 0.36), slow: true },
+        { k: 'say', text: 'Letting it hang open, then laying it down flat' },
+        { k: 'wait', t: 1.5 },
+        // Over the near edge of where it will lie, then torso down until the hem just
+        // touches the table (the shirt hangs about 26 cm below the hands)...
+        { k: 'move', arms: both(0.38, 0.4), slow: true },
+        { k: 'lift', h: LIFTS[st] },
+      ]
+      // ...then forward exactly as fast as down: the cloth lays out flat behind the hands,
+      // full length, instead of piling up or being dragged.
+      const n = 10
+      const [a0, h0, a1, h1] = [0.38, 0.4 - (1.18 - LIFTS[st]), 0.64, 0.018]
+      for (let i = 1; i <= n; i++) {
+        const t = i / n
+        list.push({ k: 'move', arms: both(a0 + (a1 - a0) * t, h0 + (h1 - h0) * t), via: i < n, slow: true })
+      }
+      list.push(
+        { k: 'grip', side: 'L', g: 0.5 },
+        { k: 'grip', side: 'R', g: 0.5 },
+        { k: 'clothRelease', side: 'L' },
+        { k: 'clothRelease', side: 'R' },
+        { k: 'move', arms: both(0.62, 0.1) },
+        { k: 'move', arms: { L: tuck('L'), R: tuck('R') } },
+        { k: 'wait', t: 0.8 },
+        { k: 'plan', make: folds },
+      )
+      return list
+    },
   })
-  acts.push(
-    { k: 'say', text: 'Both hands fold the bottom up' },
-    // Lower the torso: laying the hem down on the far side is a long, low reach.
-    { k: 'lift', h: 0.9 },
-    { k: 'grip', side: 'L', g: 0.35 },
-    { k: 'grip', side: 'R', g: 0.35 },
-    { k: 'move', arms: both(0, 0.08) },
-    { k: 'move', arms: both(0), slow: true },
-    { k: 'grip', side: 'L', g: 0 },
-    { k: 'grip', side: 'R', g: 0 },
-    { k: 'bind', side: 'R', mech: { kind: 'fold', fold: 2 } },
-  )
-  for (let i = 1; i <= steps; i++) acts.push({ k: 'move', arms: both((Math.PI * i) / steps), via: i < steps, slow: true })
-  acts.push(
-    { k: 'grip', side: 'L', g: 0.35 },
-    { k: 'grip', side: 'R', g: 0.35 },
-    { k: 'unbind', side: 'R' },
-    { k: 'move', arms: both(Math.PI, 0.1), via: true },
-    tuckHands(),
-    { k: 'say', text: 'Shirt folded' },
-  )
   return acts
 }
 
@@ -497,7 +620,7 @@ function planWash(ctx: PlanCtx): Act[] {
 }
 
 export function planTask(id: TaskId, ctx: PlanCtx, opts: { foldsDone: boolean }): Act[] {
-  const acts = id === 'sort' ? planSort(ctx) : id === 'dishes' ? planDishes(ctx) : id === 'fold' ? planFold(opts.foldsDone) : planWash(ctx)
+  const acts = id === 'sort' ? planSort(ctx) : id === 'dishes' ? planDishes(ctx) : id === 'fold' ? planFold(ctx, opts.foldsDone) : planWash(ctx)
   // With the dishwasher door open a hanging arm would pass through it, so there the
   // free arm stays tucked until the end.
   return hangIdleArms(acts, id !== 'dishes')

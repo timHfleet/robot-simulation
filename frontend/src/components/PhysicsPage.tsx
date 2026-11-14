@@ -21,7 +21,7 @@ const COMPARE: [string, string, string][] = [
   ['Items', 'Rigid bodies with mass and friction: they fall, stack, tip over and tumble in the drum', 'Same, for the cup'],
   ['Arm motion', 'Follows the controller exactly and shoves items it touches', 'Torque-limited motors push against mass and gravity'],
   ['Holding an object', 'Holds only if the item is really between the fingers; let go and it drops', 'Finger pads squeeze; friction holds it, or it slips'],
-  ['The T-shirt', 'Simulated cloth (about 860 particles): pinched, lifted, draped and folded; layers grip each other', 'Not modelled'],
+  ['The T-shirt', 'Simulated cloth (about 860 particles): starts crumpled; the robot spreads it by the shoulders, then folds it', 'Not modelled'],
   ['Doors and racks', 'Move with the hand; solid, and carry what sits on them', 'Hinge with a spring and damper; the hand must push and pull'],
 ]
 

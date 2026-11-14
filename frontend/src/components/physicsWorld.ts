@@ -192,8 +192,16 @@ function itemCollider(R: R, def: ItemDef) {
   }
 }
 
+/**
+ * Load the WebAssembly engine once. Starting it twice at the same time (React runs effects
+ * twice in development) can create two engine instances, and a world made in one but freed
+ * through the other corrupts memory and crashes the engine later.
+ */
+let ready: Promise<void> | null = null
+const initRapier = () => (ready ??= RAPIER.init())
+
 export async function createPhysics(scene: THREE.Scene, stations: Stations, rig: RobotParts): Promise<Physics> {
-  await RAPIER.init()
+  await initRapier()
   const R = RAPIER
   const world = new R.World({ x: 0, y: -9.81, z: 0 })
   world.timestep = STEP
