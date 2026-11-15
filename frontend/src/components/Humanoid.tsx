@@ -54,9 +54,8 @@ const ACCEL = 1.4
 const TURN_ACCEL = 6
 const MAX_TURN = 1.6
 const SIDES: Side[] = ['L', 'R']
-/** Wrist-camera views: width as a fraction of the scene's, and the gap from its edges (px). */
-const INSET_W = 0.24
-const INSET_M = 10
+/** Cameras view: the share of the panel's height the head camera takes (the wrist cameras share the rest). */
+const CAM_SPLIT = 0.55
 /** How quickly arm moves reach full speed along their path (fraction of full speed per second). */
 const PATH_ACCEL = 2.5
 
@@ -344,6 +343,7 @@ interface Head {
   pan: THREE.Group
   tilt: THREE.Group
   ringMat: THREE.MeshStandardMaterial
+  cam: THREE.PerspectiveCamera
 }
 
 function buildHead(parent: THREE.Group): Head {
@@ -392,7 +392,12 @@ function buildHead(parent: THREE.Group): Head {
     eye.position.set(0.086, 0.045, z)
     tilt.add(eye)
   }
-  return { pan, tilt, ringMat }
+  // The head camera, behind the lens, looking where the head looks.
+  const cam = new THREE.PerspectiveCamera(60, 16 / 9, 0.02, 20)
+  cam.position.set(0.1, 0.045, 0)
+  cam.rotation.y = -Math.PI / 2
+  tilt.add(cam)
+  return { pan, tilt, ringMat, cam }
 }
 
 function buildRobot() {
@@ -679,8 +684,8 @@ interface Settings {
   lift: number
   follow: boolean
   autoHead: boolean
-  /** Show the two wrist-camera views over the 3D scene. */
-  wristCams: boolean
+  /** What the 3D panel shows: the scene, or the robot's own cameras. */
+  view: 'scene' | 'cameras'
   pan: number
   tilt: number
   /** Joint-mode targets. */
@@ -754,7 +759,7 @@ export default function Humanoid() {
     lift: 1.12,
     follow: true,
     autoHead: true,
-    wristCams: true,
+    view: 'scene',
     pan: 0,
     tilt: 0,
     // Idle: arms hanging straight down at the sides.
@@ -1750,28 +1755,29 @@ export default function Humanoid() {
       w.sun.position.set(sim.x + 1.5, 4, sim.z + 1.8)
       w.sun.target.position.copy(pos)
       w.controls.update()
-      w.renderer.render(w.scene, w.camera)
-      // Wrist cameras: each gripper's view, drawn into the bottom-right corner of the scene.
-      if (st.wristCams) {
+      if (st.view === 'cameras') {
+        // The robot's cameras: the head camera across the top, the two wrist cameras below.
         const r = w.renderer
         const size = r.getSize(insetSize)
-        const iw = Math.round(size.x * INSET_W)
-        const ih = Math.round(iw * 0.75)
-        r.shadowMap.autoUpdate = false
+        const split = Math.round(size.y * CAM_SPLIT)
+        const views: [THREE.PerspectiveCamera, number, number, number, number][] = [
+          [w.head.cam, 0, size.y - split, size.x, split],
+          [w.arms.L.cam, 0, 0, Math.floor(size.x / 2) - 1, size.y - split - 2],
+          [w.arms.R.cam, Math.ceil(size.x / 2) + 1, 0, Math.floor(size.x / 2) - 1, size.y - split - 2],
+        ]
         r.setScissorTest(true)
-        SIDES.forEach((side, i) => {
-          const x = size.x - (2 - i) * (iw + INSET_M)
-          const cam = w.arms[side].cam
-          cam.aspect = iw / ih
+        views.forEach(([cam, x, y, vw, vh], i) => {
+          cam.aspect = vw / Math.max(1, vh)
           cam.updateProjectionMatrix()
-          r.setViewport(x, INSET_M, iw, ih)
-          r.setScissor(x, INSET_M, iw, ih)
+          r.setViewport(x, y, vw, vh)
+          r.setScissor(x, y, vw, vh)
+          r.shadowMap.autoUpdate = i === 0
           r.render(w.scene, cam)
         })
+        r.shadowMap.autoUpdate = true
         r.setScissorTest(false)
         r.setViewport(0, 0, size.x, size.y)
-        r.shadowMap.autoUpdate = true
-      }
+      } else w.renderer.render(w.scene, w.camera)
 
       // ---- Telemetry and joint loads (10 Hz) ------------------------------
       teleT += dt
@@ -1867,7 +1873,21 @@ export default function Humanoid() {
   return (
     <main className="mx-auto grid max-w-[1400px] gap-4 px-4 py-4 sm:px-6 lg:grid-cols-[minmax(0,1fr)_380px]">
       <div className="min-w-0 space-y-4">
-        <Card className="overflow-hidden" title="Humanoid (3D)">
+        <Card
+          className="overflow-hidden"
+          title="Humanoid (3D)"
+          right={
+            <Segmented
+              size="sm"
+              value={settings.view}
+              onChange={(v) => set('view', v)}
+              options={[
+                { value: 'scene', label: 'Scene' },
+                { value: 'cameras', label: 'Cameras' },
+              ]}
+            />
+          }
+        >
           <div className="-m-4">
             <div className="relative aspect-[16/10] w-full">
               <div ref={hostRef} className="absolute inset-0 cursor-crosshair" />
@@ -1887,28 +1907,20 @@ export default function Humanoid() {
                 >
                   Reset robot
                 </button>
-                <button
-                  type="button"
-                  onClick={() => set('wristCams', !settings.wristCams)}
-                  className="rounded bg-slate-800 px-2 py-1 text-slate-300 ring-1 ring-slate-700 hover:bg-slate-700"
-                >
-                  Gripper cameras: {settings.wristCams ? 'on' : 'off'}
-                </button>
               </div>
-              {settings.wristCams &&
-                (['L', 'R'] as Side[]).map((side, i) => (
-                  <div
-                    key={side}
-                    className="pointer-events-none absolute aspect-[4/3] rounded-sm ring-1 ring-slate-500/80"
-                    style={{ width: `${INSET_W * 100}%`, bottom: INSET_M, right: `calc(${(1 - i) * INSET_W * 100}% + ${(2 - i) * INSET_M}px)` }}
-                  >
-                    <span className="absolute left-1 top-1 rounded bg-slate-900/80 px-1.5 py-0.5 text-[10px] text-slate-200">
-                      {side === 'L' ? 'Left' : 'Right'} gripper camera
-                    </span>
-                    {/* Where the fingertips close. */}
-                    <span className="absolute left-1/2 top-1/2 h-3 w-3 -translate-x-1/2 -translate-y-1/2 rounded-full ring-1 ring-cyan-300/80" />
+              {settings.view === 'cameras' && (
+                <div className="pointer-events-none absolute inset-0 text-[11px] text-slate-200">
+                  <div className="absolute inset-x-0 top-0 border-b-2 border-slate-950" style={{ height: `${CAM_SPLIT * 100}%` }}>
+                    <span className="absolute right-2 top-2 rounded bg-slate-900/80 px-2 py-0.5">Head camera</span>
                   </div>
-                ))}
+                  {(['L', 'R'] as Side[]).map((side, i) => (
+                    <div key={side} className={clsx('absolute bottom-0 w-1/2', i ? 'right-0' : 'left-0 border-r-2 border-slate-950')} style={{ top: `${CAM_SPLIT * 100}%` }}>
+                      <span className="absolute left-2 top-2 rounded bg-slate-900/80 px-2 py-0.5">{side === 'L' ? 'Left' : 'Right'} gripper camera</span>
+                      <span className="absolute left-1/2 top-1/2 h-4 w-4 -translate-x-1/2 -translate-y-1/2 rounded-full ring-1 ring-cyan-300/80" />
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
           </div>
         </Card>
