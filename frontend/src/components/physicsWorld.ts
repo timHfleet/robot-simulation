@@ -18,6 +18,7 @@ import RAPIER from '@dimforge/rapier3d-compat'
 import * as THREE from 'three'
 import { ARM, jointOffset, type Side } from '../lib/kinematics'
 import { ITEMS, KITCHEN, LAUNDRY, SORT, WASHER, stationQuat, toWorld, type ItemDef, type StationId } from '../lib/stations'
+import type { Clutter } from './clutter'
 import type { Stations } from './stationProps'
 
 type R = typeof RAPIER
@@ -200,7 +201,7 @@ function itemCollider(R: R, def: ItemDef) {
 let ready: Promise<void> | null = null
 const initRapier = () => (ready ??= RAPIER.init())
 
-export async function createPhysics(scene: THREE.Scene, stations: Stations, rig: RobotParts): Promise<Physics> {
+export async function createPhysics(scene: THREE.Scene, stations: Stations, rig: RobotParts, clutter?: Clutter): Promise<Physics> {
   await initRapier()
   const R = RAPIER
   const world = new R.World({ x: 0, y: -9.81, z: 0 })
@@ -242,7 +243,8 @@ export async function createPhysics(scene: THREE.Scene, stations: Stations, rig:
   }
 
   // Robot: base, column (turns with the waist), torso (rides the lift), arm links and palms.
-  follow(rig.robot, [box(slabL(-0.31, 0.31, 0.06, 0.32, -0.27, 0.27))], G_ROBOT)
+  // The base reaches almost to the floor so it sweeps litter aside instead of driving through it.
+  follow(rig.robot, [box(slabL(-0.31, 0.31, 0.012, 0.32, -0.27, 0.27))], G_ROBOT)
   {
     // The column is centred on the waist axis; express it in the waist group's frame.
     rig.robot.updateWorldMatrix(true, true)
@@ -342,6 +344,43 @@ export async function createPhysics(scene: THREE.Scene, stations: Stations, rig:
   }
   const held: Partial<Record<Side, { id: string; joint: RAPIER.ImpulseJoint }>> = {}
 
+  // Mess on the floor: loose litter is dynamic (the base pushes it about); the bin is fixed.
+  const loose: { body: RAPIER.RigidBody; obj: THREE.Object3D; p: THREE.Vector3; q: THREE.Quaternion }[] = []
+  if (clutter) {
+    for (const st of clutter.statics) {
+      const d = st.kind === 'cyl' ? R.ColliderDesc.cylinder(st.h / 2, st.r) : R.ColliderDesc.cuboid(st.w / 2, st.h / 2, st.d / 2)
+      world.createCollider(d.setTranslation(st.x, st.h / 2, st.z).setFriction(0.6).setCollisionGroups(G_STATIC), ground)
+    }
+    for (const pr of clutter.props) {
+      pr.obj.updateWorldMatrix(true, false)
+      const p = new THREE.Vector3()
+      const q = new THREE.Quaternion()
+      pr.obj.matrixWorld.decompose(p, q, new THREE.Vector3())
+      const sh = pr.shape
+      // A perfectly round can or ball on a flat floor rolls forever from the smallest nudge;
+      // real ones are dented, labelled and squashed, so give round pieces rolling resistance.
+      const roll = sh.kind === 'box' ? 0.6 : 4
+      const body = world.createRigidBody(R.RigidBodyDesc.dynamic().setTranslation(p.x, p.y, p.z).setRotation(q).setLinearDamping(0.4).setAngularDamping(roll))
+      const d =
+        sh.kind === 'ball'
+          ? R.ColliderDesc.ball(sh.r)
+          : sh.kind === 'cyl'
+            ? // A 10-sided prism, not a true cylinder: lying on its side, a true cylinder never
+              // settles and creeps across the floor; a faceted one rests like a dented can.
+              (() => {
+                const pts: number[] = []
+                for (let k = 0; k < 10; k++) {
+                  const t = (k / 10) * Math.PI * 2
+                  for (const y of [-sh.h / 2, sh.h / 2]) pts.push(sh.r * Math.cos(t), y, sh.r * Math.sin(t))
+                }
+                return R.ColliderDesc.convexHull(new Float32Array(pts))!
+              })()
+            : R.ColliderDesc.cuboid(sh.hx, sh.hy, sh.hz).setTranslation(0, sh.y ?? 0, 0)
+      world.createCollider(d.setDensity(pr.density).setFriction(pr.friction).setRestitution(0.1).setCollisionGroups(G_ITEM), body)
+      loose.push({ body, obj: pr.obj, p, q })
+    }
+  }
+
   const _p = new THREE.Vector3()
   const _q = new THREE.Quaternion()
   const _s = new THREE.Vector3()
@@ -361,6 +400,14 @@ export async function createPhysics(scene: THREE.Scene, stations: Stations, rig:
       it.body.setAngvel({ x: 0, y: 0, z: 0 }, true)
       it.collider.setCollisionGroups(G_ITEM)
       scene.attach(it.obj)
+    }
+    for (const l of loose) {
+      l.body.setTranslation(l.p, true)
+      l.body.setRotation(l.q, true)
+      l.body.setLinvel({ x: 0, y: 0, z: 0 }, true)
+      l.body.setAngvel({ x: 0, y: 0, z: 0 }, true)
+      l.obj.position.copy(l.p)
+      l.obj.quaternion.copy(l.q)
     }
   }
   reset()
@@ -407,6 +454,13 @@ export async function createPhysics(scene: THREE.Scene, stations: Stations, rig:
       const r = it.body.rotation()
       it.obj.position.set(t.x, t.y, t.z)
       it.obj.quaternion.set(r.x, r.y, r.z, r.w)
+    }
+    for (const l of loose) {
+      if (l.body.isSleeping()) continue
+      const t = l.body.translation()
+      const r = l.body.rotation()
+      l.obj.position.set(t.x, t.y, t.z)
+      l.obj.quaternion.set(r.x, r.y, r.z, r.w)
     }
   }
 

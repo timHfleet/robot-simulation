@@ -96,6 +96,8 @@ export const KITCHEN = {
   /** Back wall face (station a), and the wall cabinets hung on it over the counters. */
   wallA: 0.98,
   uppers: { a0: 0.66, y0: 1.42, y1: 2.12 },
+  /** Pedal bin standing at the end of the left-hand run (centre, radius, height). */
+  trash: { a: 0.62, b: -1.72, r: 0.16, h: 0.6 },
   /** Undermount sink in the right-hand run, and its faucet behind it. */
   sink: { a0: 0.5, a1: 0.86, b0: 0.9, b1: 1.3, depth: 0.2 },
   /** Tall cabinet around the dishwasher. */
@@ -353,6 +355,14 @@ export const FURNITURE: Record<StationId, Box[]> = {
   kitchen: [
     ...KITCHEN.counters.map((c) => ({ ...c, y0: 0, y1: KITCHEN.counterH })),
     { ...KITCHEN.cabinet, y0: 0, y1: KITCHEN.cabinet.top },
+    {
+      a0: KITCHEN.trash.a - KITCHEN.trash.r,
+      a1: KITCHEN.trash.a + KITCHEN.trash.r,
+      b0: KITCHEN.trash.b - KITCHEN.trash.r,
+      b1: KITCHEN.trash.b + KITCHEN.trash.r,
+      y0: 0,
+      y1: KITCHEN.trash.h,
+    },
   ],
   laundry: [{ a0: LAUNDRY.table.a0, a1: LAUNDRY.table.a1, y0: 0, y1: LAUNDRY.table.h, b0: LAUNDRY.table.b0, b1: LAUNDRY.table.b1 }],
   washer: [

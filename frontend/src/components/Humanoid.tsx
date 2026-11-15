@@ -32,6 +32,7 @@ import { Button, Card, Segmented, Slider, Stat } from './ui'
 import { DOCKS, ITEMS, KITCHEN, LAUNDRY, STAGING, doorAngleFor, foldAngleFor, furnitureRects, lidAngleFor, toLocal, toWorld, type StationId } from '../lib/stations'
 import { handPath, keepOutsFor, pathSteps, toRobotGoal, waistForMove, type HandGoal } from '../lib/motion'
 import { TASKS, planTask, type Act, type Mechanism, type PlanCtx, type TaskId } from '../lib/tasks'
+import { buildClutter, type Clutter } from './clutter'
 import { buildStations, type Mech, type Stations } from './stationProps'
 import type { Physics, PhysicsStats } from './physicsWorld'
 import { createCloth, type Feature } from './clothSim'
@@ -614,6 +615,7 @@ interface World {
   arms: Record<Side, ArmRig>
   head: Head
   stations: Stations
+  clutter: Clutter
   targets: Record<Side, THREE.Group>
   reachLines: Record<Side, THREE.Line>
   goal: THREE.Group
@@ -713,6 +715,13 @@ function buildWorld(el: HTMLDivElement): World {
   scene.add(parts.robot)
   const stations = buildStations(scene)
   pickables.push(...stations.pickables)
+  const clutter = buildClutter(
+    scene,
+    OBSTACLES.map((o) => ({ x: o.x, z: o.z, r: o.kind === 'crate' ? Math.hypot(o.w, o.d) / 2 : o.r })),
+  )
+  // Crates and barrels are solid for the litter too.
+  for (const o of OBSTACLES)
+    clutter.statics.push(o.kind === 'crate' ? { kind: 'box', x: o.x, z: o.z, w: o.w, d: o.d, h: o.h } : { kind: 'cyl', x: o.x, z: o.z, r: o.r, h: o.h })
 
   // IK hand targets: children of the robot, so they ride along when it drives.
   const mkTarget = (color: string) => {
@@ -761,7 +770,7 @@ function buildWorld(el: HTMLDivElement): World {
   trail.frustumCulled = false
   scene.add(trail)
 
-  return { renderer, scene, camera, controls, gizmo, sun, floor, pickables, goal, trail, targets, reachLines, stations, ...parts }
+  return { renderer, scene, camera, controls, gizmo, sun, floor, pickables, goal, trail, targets, reachLines, stations, clutter, ...parts }
 }
 
 // ---------------------------------------------------------------------------
@@ -925,7 +934,7 @@ export default function Humanoid() {
     // Loaded on demand: the engine is a large WebAssembly module, so the scene shows first.
     const startPhysics = () =>
       import('./physicsWorld')
-        .then(({ createPhysics }) => createPhysics(w.scene, w.stations, { robot: w.robot, waist: w.waist, carriage: w.carriage, arms: w.arms }))
+        .then(({ createPhysics }) => createPhysics(w.scene, w.stations, { robot: w.robot, waist: w.waist, carriage: w.carriage, arms: w.arms }, w.clutter))
         .then((p) => {
           if (disposed) return p.dispose()
           phys = p
