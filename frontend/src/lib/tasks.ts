@@ -651,24 +651,26 @@ function planFold(ctx: PlanCtx, towelsLeft: number): Act[] {
       // layers), and lay it down gently on top of the pile before letting go.
       k: 'plan',
       make: () => {
-        const c = L(ctx.cloth('centre'))
+        // Pinch points: 2 cm in from each end, through every layer.
+        const eL = L(ctx.cloth('edgeL'))
+        const eR = L(ctx.cloth('edgeR'))
         const top = ctx.cloth('top').y
-        // The folded towel's ends are its left and right edges on the table (along b).
-        const half = 0.065
+        const half = Math.max(0.04, (eR.z - eL.z) / 2 - 0.02)
+        const c = eL.clone().add(eR).multiplyScalar(0.5)
         const grip = (d: number) => W(c.x, top - 0.004, c.z + d)
         const S = LAUNDRY.stack
         const lift = 0.06
         const list: Act[] = [
-          { k: 'say', text: 'Both hands take it by the ends and carry it to the stack' },
+          { k: 'say', text: 'Both hands pinch it by the ends and carry it to the stack' },
           { k: 'grip', side: 'L', g: 0.5 },
           { k: 'grip', side: 'R', g: 0.5 },
           { k: 'move', arms: { L: at('L', up(grip(-half), 0.07)), R: at('R', up(grip(half), 0.07)) } },
           { k: 'move', arms: { L: at('L', grip(-half)), R: at('R', grip(half)) }, slow: true },
           { k: 'grip', side: 'L', g: 0 },
           { k: 'grip', side: 'R', g: 0 },
-          // Each hand holds a wide band of every layer at its end, so the towel stays folded.
-          { k: 'clothGrab', side: 'L', feature: 'nearest', radius: 0.07 },
-          { k: 'clothGrab', side: 'R', feature: 'nearest', radius: 0.07 },
+          // Each hand pinches its end through every layer there.
+          { k: 'clothGrab', side: 'L', feature: 'nearest', radius: 0.035 },
+          { k: 'clothGrab', side: 'R', feature: 'nearest', radius: 0.035 },
           { k: 'move', arms: { L: at('L', up(grip(-half), lift)), R: at('R', up(grip(half), lift)) }, slow: true },
           {
             k: 'plan',

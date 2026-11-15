@@ -1031,6 +1031,19 @@ export default function Humanoid() {
       if (!def) return id
       return def.kind === 'block' ? `${def.color} block` : def.kind === 'cup' ? 'mug' : def.kind
     }
+    /** The towel's left or right end as it lies (its furthest point along b), at its middle depth. */
+    const clothEdge = (sign: number) => {
+      const P = cloth.particles()
+      let best = -1
+      let cx = 0
+      for (let i = 0; i < P.length; i += 3) cx += P[i]
+      cx /= P.length / 3
+      for (let i = 0; i < P.length; i += 3) {
+        if (Math.abs(P[i] - cx) > 0.04) continue
+        if (best < 0 || sign * P[i + 2] > sign * P[best + 2]) best = i
+      }
+      return new THREE.Vector3(P[best], cloth.top().y, P[best + 2])
+    }
     const say = (text: string) => {
       sim.log = [...sim.log.slice(-7), text]
     }
@@ -1047,7 +1060,9 @@ export default function Humanoid() {
             ? cloth.top()
             : f === 'centre'
               ? cloth.centroid()
-              : f === 'stack'
+              : f === 'edgeL' || f === 'edgeR'
+                ? clothEdge(f === 'edgeL' ? -1 : 1)
+                : f === 'stack'
                 ? new THREE.Vector3(LAUNDRY.stack.a, cloth.staticHeight(LAUNDRY.stack.a, LAUNDRY.stack.b), LAUNDRY.stack.b)
                 : cloth.feature(f as Feature)
         return toWorld('laundry', p.x, p.y, p.z)
