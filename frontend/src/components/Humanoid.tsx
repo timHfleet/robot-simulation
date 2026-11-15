@@ -4,7 +4,7 @@ import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
 import { TransformControls } from 'three/examples/jsm/controls/TransformControls.js'
 import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js'
 import { RoundedBoxGeometry } from 'three/examples/jsm/geometries/RoundedBoxGeometry.js'
-import { ArrowDown, ArrowLeft, ArrowRight, ArrowUp, Boxes, Crosshair, Hand, RotateCcw, Shirt, SlidersHorizontal, Square, UtensilsCrossed, WashingMachine } from 'lucide-react'
+import { ArrowDown, ArrowLeft, ArrowRight, ArrowUp, Boxes, Crosshair, Hand, RotateCcw, Shirt, SlidersHorizontal, Square, Trash2, UtensilsCrossed, WashingMachine } from 'lucide-react'
 import clsx from 'clsx'
 import { approach, clamp, deg, fmt, rad, servoStep, wrap } from '../lib/math'
 import {
@@ -33,6 +33,7 @@ import { DOCKS, ITEMS, KITCHEN, LAUNDRY, STAGING, doorAngleFor, foldAngleFor, fu
 import { handPath, keepOutsFor, pathSteps, toRobotGoal, waistForMove, type HandGoal } from '../lib/motion'
 import { TASKS, planTask, type Act, type Mechanism, type PlanCtx, type TaskId } from '../lib/tasks'
 import { buildClutter, type Clutter } from './clutter'
+import { FloorGrid, planPath, pathLength, type Disc, type Pt } from '../lib/pathPlan'
 import { buildStations, type Mech, type Stations } from './stationProps'
 import type { Physics, PhysicsStats } from './physicsWorld'
 import { createCloth, type Feature } from './clothSim'
@@ -87,6 +88,19 @@ const OBSTACLES: Obstacle[] = [
   { kind: 'barrel', x: -3.0, z: 3.4, r: 0.2, h: 0.55, color: '#dc2626' },
 ]
 const FURNITURE_RECTS = furnitureRects()
+/** How far the base's corners reach from its centre: the clearance it needs to turn on the spot. */
+const TURN_R = 0.47 // 0.44 to the corners, plus slack for the 5 cm grid
+/** Where the base's centre may go: clear of furniture, crates, barrels and the walls by TURN_R. */
+const FLOOR_GRID = new FloorGrid(
+  BOUNDS,
+  [
+    ...FURNITURE_RECTS,
+    ...OBSTACLES.flatMap((o) => (o.kind === 'crate' ? [{ x0: o.x - o.w / 2, x1: o.x + o.w / 2, z0: o.z - o.d / 2, z1: o.z + o.d / 2 }] : [])),
+  ],
+  OBSTACLES.flatMap((o) => (o.kind === 'barrel' ? [{ x: o.x, z: o.z, r: o.r }] : [])),
+  TURN_R,
+  0.45,
+)
 /** The base's footprint: front and back from the centre, and half its width. */
 const FOOT = { front: 0.33, back: 0.33, half: 0.29 }
 
@@ -1132,7 +1146,12 @@ export default function Humanoid() {
 
     // ---------------------------------------------------------------- task runner
     const S = w.stations
+    const clutterOf = (id: string) => w.clutter.props.find((pr) => pr.id === id)
+    /** The 3D object for a station item or a piece of floor clutter. */
+    const objOf = (id: string) => S.items.get(id) ?? clutterOf(id)?.obj
     const itemName = (id: string) => {
+      const pr = clutterOf(id)
+      if (pr) return pr.kind === 'trash' ? 'piece of rubbish' : pr.kind
       const def = ITEMS.find((d) => d.id === id)
       if (!def) return id
       return def.kind === 'block' ? `${def.color} block` : def.kind === 'cup' ? 'mug' : def.kind
@@ -1142,14 +1161,14 @@ export default function Humanoid() {
      * within 3 cm of its slot in the rack. Returns what went wrong, or null.
      */
     const rackProblem = (id: string, container: string, pos: [number, number, number]): string | null => {
-      const o = S.items.get(id)
+      const o = objOf(id)
       const rack = S.containers[container]
       if (!o || !rack) return null
       o.updateMatrixWorld()
       rack.updateMatrixWorld()
       const local = o.getWorldPosition(new THREE.Vector3()).applyMatrix4(rack.matrixWorld.clone().invert())
       const e = o.matrixWorld.elements
-      const kind = ITEMS.find((d) => d.id === id)?.kind
+      const kind = ITEMS.find((d) => d.id === id)?.kind ?? (clutterOf(id)?.kind === 'mug' ? 'cup' : undefined)
       // Plates stand with their axis (local z) level; mugs with their axis (local y) vertical.
       const tilt = kind === 'plate' ? Math.asin(Math.min(1, Math.abs(e[9]))) : Math.acos(Math.min(1, Math.abs(e[5])))
       if (tilt > THREE.MathUtils.degToRad(25)) return `tipped over in the rack (${Math.round(THREE.MathUtils.radToDeg(tilt))}° off upright)`
@@ -1191,11 +1210,22 @@ export default function Humanoid() {
     }
     const planCtx = (): PlanCtx => ({
       item: (id) => {
-        const o = S.items.get(id)!
+        const o = objOf(id)!
         o.updateWorldMatrix(true, false)
-        return { pos: o.getWorldPosition(new THREE.Vector3()), quat: o.getWorldQuaternion(new THREE.Quaternion()), where: S.where.get(id) ?? 'home' }
+        return { pos: o.getWorldPosition(new THREE.Vector3()), quat: o.getWorldQuaternion(new THREE.Quaternion()), where: S.where.get(id) ?? (clutterOf(id) ? 'floor' : 'home') }
       },
-      ids: (kind) => ITEMS.filter((d) => d.kind === kind).map((d) => d.id),
+      ids: (kind) => {
+        const own = ITEMS.filter((d) => d.kind === kind).map((d) => d.id)
+        return own.length ? own : w.clutter.props.filter((pr) => pr.kind === kind).map((pr) => pr.id)
+      },
+      shape: (id) => clutterOf(id)?.shape ?? null,
+      kindOf: (id) => clutterOf(id)?.kind ?? null,
+      held: () => (phys ? { ...phys.stats().held } : {}),
+      robot: () => ({ x: sim.x, z: sim.z, yaw: sim.yaw }),
+      free: (x, z, yaw) => !blockedAt(x, z, yaw),
+      driveLength: (x, z, yaw, except) => gotoLength(x, z, yaw, except),
+      bin: w.clutter.bin,
+      hamper: w.clutter.hamper,
       cloth: (f) => {
         const p =
           f === 'top'
@@ -1214,6 +1244,117 @@ export default function Humanoid() {
       const d = DOCKS[st]
       return { x: d.x - Math.cos(d.yaw) * STAGING, z: d.z + Math.sin(d.yaw) * STAGING }
     }
+    /** Loose things on the floor the base should steer round (not held, not put away), as discs. */
+    const floorLitter = (except: string[] = []): Disc[] => {
+      if (!phys) return []
+      const out: Disc[] = []
+      for (const pr of w.clutter.props) {
+        if (except.includes(pr.id)) continue
+        const where = S.where.get(pr.id) ?? 'floor'
+        if (where !== 'floor') continue
+        const p = phys.state(pr.id).pos
+        if (p.y > 0.25) continue
+        const sh = pr.shape
+        const r = sh.kind === 'ball' ? sh.r : sh.kind === 'cyl' ? Math.max(sh.r, sh.h / 2) : Math.hypot(sh.hx, sh.hz)
+        out.push({ x: p.x, z: p.z, r })
+      }
+      return out
+    }
+    /**
+     * Parked where there's no room to turn (next to furniture)? Back straight out (or roll
+     * forward) along the current heading until the base can turn freely. Returns the move and
+     * where it ends, or null if there's no need (or no way).
+     */
+    const escapeSeg = (soft: Disc[] = floorLitter()): { seg: Seg; at: Pt } | null => {
+      if (!FLOOR_GRID.isHard(sim.x, sim.z)) return null
+      const fx = Math.cos(sim.yaw)
+      const fz = -Math.sin(sim.yaw)
+      let fallback: { seg: Seg; at: Pt } | null = null
+      for (const dir of [-1, 1]) {
+        let dirty = false
+        for (let d = 0.05; d <= 1.2; d += 0.05) {
+          const x = sim.x + dir * fx * d
+          const z = sim.z + dir * fz * d
+          if (blockedAt(x, z, sim.yaw)) break
+          if (litterUnder(x, z, sim.yaw, soft)) dirty = true
+          if (!FLOOR_GRID.isHard(x, z)) {
+            const out = { seg: { kind: 'line' as const, x, z, vmax: 0.25 }, at: { x, z } }
+            if (!dirty) return out // the way with no litter in it
+            fallback ??= out
+            break
+          }
+        }
+      }
+      return fallback
+    }
+    /** Would the base, standing here, be on top of any of these loose things? */
+    const litterUnder = (x: number, z: number, yaw: number, soft: Disc[], margin = 0.03) => {
+      const c = Math.cos(yaw)
+      const sn = Math.sin(yaw)
+      for (const d of soft) {
+        const dx = d.x - x
+        const dz = d.z - z
+        const u = dx * c - dz * sn // ahead
+        const v = dx * sn + dz * c // to the right
+        if (u > -FOOT.back - d.r - margin && u < FOOT.front + d.r + margin && Math.abs(v) < FOOT.half + d.r + margin) return true
+      }
+      return false
+    }
+    /** Turn-and-drive segments along planned waypoints. */
+    const segsAlong = (from: Pt, pts: Pt[], vmax = 0.7): Seg[] => {
+      const segs: Seg[] = []
+      let c = from
+      for (const p of pts) {
+        segs.push({ kind: 'turn', yaw: Math.atan2(-(p.z - c.z), p.x - c.x) }, { kind: 'line', x: p.x, z: p.z, vmax })
+        c = p
+      }
+      return segs
+    }
+    /**
+     * Drive to (x, z) and end up facing `yaw`, steering round furniture and litter.
+     * Spots right next to furniture (a bin, a counter) are inside the planner's turning margin,
+     * so it plans to a point backed off along the final heading, then rolls straight in.
+     * Returns null if there's no way there.
+     */
+    const planGoto = (x: number, z: number, yaw: number, except: string[] = []): Seg[] | null => {
+      if (blockedAt(x, z, yaw)) return null
+      // Steer round everything on the way, the target too: only the final pose may be beside it.
+      const soft = floorLitter()
+      const fx = Math.cos(yaw)
+      const fz = -Math.sin(yaw)
+      let back = 0
+      while (back <= 0.8 && FLOOR_GRID.isHard(x - fx * back, z - fz * back)) back += 0.05
+      if (back > 0.8) return null
+      for (let k = 0; k <= 10; k++) if (blockedAt(x - fx * back * (k / 10), z - fz * back * (k / 10), yaw)) return null
+      const pre = { x: x - fx * back, z: z - fz * back }
+      const esc = escapeSeg(soft)
+      const start = esc ? esc.at : { x: sim.x, z: sim.z }
+      const pts = Math.hypot(pre.x - start.x, pre.z - start.z) < 0.03 ? [] : planPath(FLOOR_GRID, start, pre, soft)
+      if (!pts) return null
+      const segs = [...(esc ? [esc.seg] : []), ...segsAlong(start, pts)]
+      segs.push({ kind: 'turn', yaw })
+      if (back > 0.001) segs.push({ kind: 'line', x, z, vmax: 0.2 })
+      return segs
+    }
+    /**
+     * Length of the drive planGoto would take (Infinity if none). Ending up on top of litter,
+     * or rolling over it on the last straight bit, counts as 5 m extra, so a clean spot wins.
+     */
+    const gotoLength = (x: number, z: number, yaw: number, except: string[] = []) => {
+      const segs = planGoto(x, z, yaw, except)
+      if (!segs) return Infinity
+      const soft = floorLitter(except)
+      const last = segs[segs.length - 1]
+      const from = last.kind === 'line' && segs.length > 1 ? (segs[segs.length - 3]?.kind === 'line' ? (segs[segs.length - 3] as { x: number; z: number }) : { x: sim.x, z: sim.z }) : { x, z }
+      let dirty = false
+      for (let k = 0; k <= 8 && !dirty; k++) dirty = litterUnder(from.x + ((x - from.x) * k) / 8, from.z + ((z - from.z) * k) / 8, yaw, soft)
+      // Turning to the final heading sweeps the corners round: nothing within reach of them either.
+      if (!dirty) dirty = soft.some((d) => Math.hypot(d.x - from.x, d.z - from.z) < 0.46 + d.r)
+      const penalty = dirty ? 5 : 0
+      const pts = segs.flatMap((sg) => (sg.kind === 'line' ? [{ x: sg.x, z: sg.z }] : []))
+      // Each stop to turn costs time too: count it as a little extra distance.
+      return pathLength({ x: sim.x, z: sim.z }, pts) + 0.1 * segs.filter((sg) => sg.kind === 'turn').length + penalty
+    }
     /** Path to a dock: back out of the current dock if parked at one, turn, drive to the staging point, turn, roll in. */
     const pathTo = (to: StationId): Seg[] => {
       const segs: Seg[] = []
@@ -1231,7 +1372,20 @@ export default function Humanoid() {
       }
       const d = DOCKS[to]
       const sg = stagingOf(to)
-      if (Math.hypot(sg.x - cx, sg.z - cz) > 0.03) segs.push({ kind: 'turn', yaw: Math.atan2(-(sg.z - cz), sg.x - cx) }, { kind: 'line', x: sg.x, z: sg.z, vmax: 0.8 })
+      if (!segs.length) {
+        const esc = escapeSeg()
+        if (esc) {
+          segs.push(esc.seg)
+          cx = esc.at.x
+          cz = esc.at.z
+        }
+      }
+      if (Math.hypot(sg.x - cx, sg.z - cz) > 0.03) {
+        // Round furniture and litter to the staging point (straight there if the planner can't find a way).
+        const pts = planPath(FLOOR_GRID, { x: cx, z: cz }, sg, floorLitter())
+        if (pts) segs.push(...segsAlong({ x: cx, z: cz }, pts, 0.8))
+        else segs.push({ kind: 'turn', yaw: Math.atan2(-(sg.z - cz), sg.x - cx) }, { kind: 'line', x: sg.x, z: sg.z, vmax: 0.8 })
+      }
       segs.push({ kind: 'turn', yaw: d.yaw }, { kind: 'line', x: d.x, z: d.z, vmax: 0.25 })
       return segs
     }
@@ -1274,6 +1428,7 @@ export default function Humanoid() {
       resetScene: () => {
         if (sim.task) endTask(null)
         S.reset()
+        for (const pr of w.clutter.props) S.where.delete(pr.id) // back on the floor
         phys?.reset()
         fillBasket()
         landing = []
@@ -1306,6 +1461,13 @@ export default function Humanoid() {
           sim.path = pathTo(a.to)
           sim.blockedT = 0
           break
+        case 'goto': {
+          const segs = planGoto(a.x, a.z, a.yaw, a.except)
+          if (segs) sim.path = segs
+          else say(`No clear way to ${a.what ?? 'there'}`)
+          sim.blockedT = 0
+          break
+        }
         case 'nudge':
           sim.path = [{ kind: 'line', x: sim.x + Math.cos(sim.yaw) * a.d, z: sim.z - Math.sin(sim.yaw) * a.d, vmax: 0.25 }]
           sim.blockedT = 0
@@ -1322,6 +1484,8 @@ export default function Humanoid() {
           const station = TASKS.find((x) => x.id === sim.task!.id)!.station
           // Tables, tubs, the basket and machines the arm must stay above, where the robot stands now.
           const keepOut = keepOutsFor(station, robot)
+          // The robot's own base: reaching down to the floor, the elbow and forearm stay above it.
+          keepOut.push({ x0: -0.34, x1: 0.34, z0: -0.31, z1: 0.31, y: 0.36, hand: false })
           const goals: Partial<Record<Side, HandGoal>> = {}
           for (const side of SIDES) {
             const g = a.arms[side]
@@ -1469,6 +1633,7 @@ export default function Humanoid() {
     const finished = (a: Act) => {
       switch (a.k) {
         case 'drive':
+        case 'goto':
         case 'nudge':
           return sim.path.length === 0
         case 'lift':
@@ -1608,11 +1773,12 @@ export default function Humanoid() {
     let teleT = 0
     const baseM = new THREE.Matrix4()
 
+    let ffDt = 0
     const loop = () => {
       // While the cloth is moving, simulated time advances at most 16 cloth steps (1/120 s each)
       // per frame: on a slow machine or at high task speed the whole scene slows down rather than
       // the cloth taking coarse steps (which would let folded layers pass through each other).
-      const dt = Math.min(cloth.sleeping() ? 0.5 : clothFrame(), Math.min(0.25, clock.getDelta()) * (sim.task ? settingsRef.current.speed : 1))
+      const dt = ffDt || Math.min(cloth.sleeping() ? 0.5 : clothFrame(), Math.min(0.25, clock.getDelta()) * (sim.task ? settingsRef.current.speed : 1))
       const steps = Math.max(1, Math.ceil(dt / 0.01))
       const h = dt / steps
       const t = clock.elapsedTime
@@ -1846,7 +2012,14 @@ export default function Humanoid() {
         for (const l of landing) {
           if (sim.time < l.at) continue
           const p = phys.state(l.id).pos
-          if (p.y < 0.2) {
+          if (l.where === 'bin' || l.where === 'hamper') {
+            // Dropped into the bin or hamper: it lands low, but inside.
+            const c = w.clutter[l.where]
+            if (Math.hypot(p.x - c.x, p.z - c.z) > c.r || p.y > c.h) {
+              S.where.set(l.id, 'floor')
+              say(`The ${itemName(l.id)} missed the ${l.where}: it'll be picked up again`)
+            }
+          } else if (p.y < 0.2) {
             S.where.set(l.id, 'floor')
             say(`The ${itemName(l.id)} fell on the floor`)
           } else if (l.where === 'rack') {
@@ -1979,7 +2152,7 @@ export default function Humanoid() {
         r.shadowMap.autoUpdate = true
         r.setScissorTest(false)
         r.setViewport(0, 0, size.x, size.y)
-      } else w.renderer.render(w.scene, w.camera)
+      } else if (!ffDt) w.renderer.render(w.scene, w.camera)
 
       // ---- Telemetry and joint loads (10 Hz) ------------------------------
       teleT += dt
@@ -2023,9 +2196,22 @@ export default function Humanoid() {
           clear: { ...sim.clear },
         })
       }
-      raf = requestAnimationFrame(loop)
+      if (!ffDt) raf = requestAnimationFrame(loop)
     }
     raf = requestAnimationFrame(loop)
+    if (import.meta.env.DEV) {
+      // Testing aid: advance `seconds` of simulated time in steps of `dt`, without drawing.
+      Object.assign(window, {
+        __sim: sim,
+        __ff: (seconds: number, dt = 0.02) => {
+          for (let t = 0; t < seconds; t += dt) {
+            ffDt = dt
+            loop()
+          }
+          ffDt = 0
+        },
+      })
+    }
 
     return () => {
       disposed = true
@@ -2064,7 +2250,7 @@ export default function Humanoid() {
   const padBtn = 'grid h-11 place-items-center rounded-lg bg-slate-800 text-slate-200 ring-1 ring-slate-700 hover:bg-slate-700 active:bg-cyan-500 active:text-slate-950 select-none touch-none'
   const stateTone = tele.state === 'Blocked' ? 'bad' : tele.state === 'Arrived' ? 'good' : undefined
   const busy = tele.task ? 'pointer-events-none opacity-50' : undefined
-  const TASK_ICONS: Record<TaskId, typeof Boxes> = { sort: Boxes, dishes: UtensilsCrossed, fold: Shirt, wash: WashingMachine }
+  const TASK_ICONS: Record<TaskId, typeof Boxes> = { sort: Boxes, dishes: UtensilsCrossed, fold: Shirt, wash: WashingMachine, cleanup: Trash2 }
   const ikMode = settings.armMode === 'ik'
   const ikSide: Side = settings.armSel === 'L' ? 'L' : 'R'
   const ik = tele.ik[ikSide]

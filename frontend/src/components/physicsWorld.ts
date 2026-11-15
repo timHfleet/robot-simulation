@@ -305,7 +305,7 @@ export async function createPhysics(scene: THREE.Scene, stations: Stations, rig:
       }
     } else {
       const c = K.cupPosts
-      for (const s of K.cupSlots)
+      for (const s of [...K.cupSlots, ...K.mugSlots])
         for (let k = 0; k < 4; k++) {
           const t = Math.PI / 4 + (k * Math.PI) / 2
           const a = s.a + c.r * Math.cos(t)
@@ -344,10 +344,31 @@ export async function createPhysics(scene: THREE.Scene, stations: Stations, rig:
   }
   const held: Partial<Record<Side, { id: string; joint: RAPIER.ImpulseJoint }>> = {}
 
-  // Mess on the floor: loose litter is dynamic (the base pushes it about); the bin is fixed.
-  const loose: { body: RAPIER.RigidBody; obj: THREE.Object3D; p: THREE.Vector3; q: THREE.Quaternion }[] = []
+  // Mess on the floor: each loose piece is an ordinary item (dynamic, and the hands can pick
+  // it up); `loose` remembers where it started, for Reset scene. The bin and hamper are hollow.
+  const loose: { obj: THREE.Object3D; p: THREE.Vector3; q: THREE.Quaternion }[] = []
   if (clutter) {
     for (const st of clutter.statics) {
+      if (st.kind === 'tub') {
+        // Floor plus 16 wall staves, so what is dropped in stays in.
+        const t = 0.012
+        world.createCollider(R.ColliderDesc.cylinder(0.02, st.r).setTranslation(st.x, 0.02, st.z).setFriction(0.6).setCollisionGroups(G_STATIC), ground)
+        const n = 16
+        const w = 2 * st.r * Math.tan(Math.PI / n) + 0.004
+        for (let k = 0; k < n; k++) {
+          const a = (k / n) * Math.PI * 2
+          const q = new THREE.Quaternion().setFromAxisAngle(v(0, 1, 0), -a)
+          world.createCollider(
+            R.ColliderDesc.cuboid(t / 2, st.h / 2, w / 2)
+              .setTranslation(st.x + Math.cos(a) * (st.r - t / 2), st.h / 2, st.z + Math.sin(a) * (st.r - t / 2))
+              .setRotation(q)
+              .setFriction(0.5)
+              .setCollisionGroups(G_STATIC),
+            ground,
+          )
+        }
+        continue
+      }
       const d = st.kind === 'cyl' ? R.ColliderDesc.cylinder(st.h / 2, st.r) : R.ColliderDesc.cuboid(st.w / 2, st.h / 2, st.d / 2)
       world.createCollider(d.setTranslation(st.x, st.h / 2, st.z).setFriction(0.6).setCollisionGroups(G_STATIC), ground)
     }
@@ -376,8 +397,9 @@ export async function createPhysics(scene: THREE.Scene, stations: Stations, rig:
                 return R.ColliderDesc.convexHull(new Float32Array(pts))!
               })()
             : R.ColliderDesc.cuboid(sh.hx, sh.hy, sh.hz).setTranslation(0, sh.y ?? 0, 0)
-      world.createCollider(d.setDensity(pr.density).setFriction(pr.friction).setRestitution(0.1).setCollisionGroups(G_ITEM), body)
-      loose.push({ body, obj: pr.obj, p, q })
+      const collider = world.createCollider(d.setDensity(pr.density).setFriction(pr.friction).setRestitution(0.1).setCollisionGroups(G_ITEM), body)
+      items.set(pr.id, { body, collider, obj: pr.obj })
+      loose.push({ obj: pr.obj, p, q })
     }
   }
 
@@ -391,6 +413,10 @@ export async function createPhysics(scene: THREE.Scene, stations: Stations, rig:
       if (h) world.removeImpulseJoint(h.joint, true)
       delete held[side]
     }
+    for (const l of loose) {
+      l.obj.position.copy(l.p)
+      l.obj.quaternion.copy(l.q)
+    }
     for (const [, it] of items) {
       it.obj.updateWorldMatrix(true, false)
       it.obj.matrixWorld.decompose(_p, _q, _s)
@@ -400,14 +426,6 @@ export async function createPhysics(scene: THREE.Scene, stations: Stations, rig:
       it.body.setAngvel({ x: 0, y: 0, z: 0 }, true)
       it.collider.setCollisionGroups(G_ITEM)
       scene.attach(it.obj)
-    }
-    for (const l of loose) {
-      l.body.setTranslation(l.p, true)
-      l.body.setRotation(l.q, true)
-      l.body.setLinvel({ x: 0, y: 0, z: 0 }, true)
-      l.body.setAngvel({ x: 0, y: 0, z: 0 }, true)
-      l.obj.position.copy(l.p)
-      l.obj.quaternion.copy(l.q)
     }
   }
   reset()
@@ -438,6 +456,11 @@ export async function createPhysics(scene: THREE.Scene, stations: Stations, rig:
         f.body.setNextKinematicTranslation(_p)
         f.body.setNextKinematicRotation(_q)
       }
+      // A held item must never fall asleep: a sleeping body stays put while the hand moves on.
+      for (const side of ['L', 'R'] as Side[]) {
+        const h = held[side]
+        if (h) items.get(h.id)?.body.wakeUp()
+      }
       world.step()
       // Keep items physical: nothing in a kitchen moves faster than this.
       for (const [, it] of items) {
@@ -454,13 +477,6 @@ export async function createPhysics(scene: THREE.Scene, stations: Stations, rig:
       const r = it.body.rotation()
       it.obj.position.set(t.x, t.y, t.z)
       it.obj.quaternion.set(r.x, r.y, r.z, r.w)
-    }
-    for (const l of loose) {
-      if (l.body.isSleeping()) continue
-      const t = l.body.translation()
-      const r = l.body.rotation()
-      l.obj.position.set(t.x, t.y, t.z)
-      l.obj.quaternion.set(r.x, r.y, r.z, r.w)
     }
   }
 

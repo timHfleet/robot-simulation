@@ -136,6 +136,12 @@ export const KITCHEN = {
     { a: 0.14, b: 0.08 },
     { a: 0.14, b: 0.17 },
   ],
+  /** Back-row slots in the upper rack for mugs brought in from the floor (Clean up room). */
+  mugSlots: [
+    { a: 0.28, b: -0.19 },
+    { a: 0.28, b: -0.095 },
+    { a: 0.28, b: 0.0 },
+  ],
 }
 export type RackId = 'lower' | 'upper'
 /** Rack origin (front-centre, on its floor) in station coordinates for a given pull-out. */
@@ -166,6 +172,8 @@ export const LAUNDRY = {
   basket: { a0: 0.4, a1: 0.7, b0: -0.6, b1: -0.3, wall: 0.012, h: 0.11 },
   /** Where folded towels are stacked, on the right of the table. */
   stack: { a: 0.52, b: 0.38 },
+  /** Laundry hamper on the floor past the right end of the table (centre, radius, rim height). */
+  hamper: { a: 0.6, b: 1.05, r: 0.23, h: 0.48 },
   /** Folds in order: left side, right side, then bottom half up. */
   folds: [
     { point: [0, 0.746, -0.08], n: [0, 0, -1], pinch: [0.55, -0.26] },
@@ -364,7 +372,17 @@ export const FURNITURE: Record<StationId, Box[]> = {
       y1: KITCHEN.trash.h,
     },
   ],
-  laundry: [{ a0: LAUNDRY.table.a0, a1: LAUNDRY.table.a1, y0: 0, y1: LAUNDRY.table.h, b0: LAUNDRY.table.b0, b1: LAUNDRY.table.b1 }],
+  laundry: [
+    { a0: LAUNDRY.table.a0, a1: LAUNDRY.table.a1, y0: 0, y1: LAUNDRY.table.h, b0: LAUNDRY.table.b0, b1: LAUNDRY.table.b1 },
+    {
+      a0: LAUNDRY.hamper.a - LAUNDRY.hamper.r,
+      a1: LAUNDRY.hamper.a + LAUNDRY.hamper.r,
+      b0: LAUNDRY.hamper.b - LAUNDRY.hamper.r,
+      b1: LAUNDRY.hamper.b + LAUNDRY.hamper.r,
+      y0: 0,
+      y1: LAUNDRY.hamper.h,
+    },
+  ],
   washer: [
     { ...WASHER.body, y0: 0, y1: WASHER.body.top },
     { ...WASHER.stand, y0: 0, y1: WASHER.stand.top },

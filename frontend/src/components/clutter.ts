@@ -1,22 +1,26 @@
 /**
  * Mess on the floor: fallen mugs and a coffee spill by the kitchen, towels dropped by the
  * laundry table, litter everywhere (paper balls, cans, bottles, wrappers, coffee cups, a
- * pizza box) and an overflowing pedal bin at the end of the kitchen counter.
+ * takeaway box), plus an empty pedal bin at the end of the kitchen counter and a laundry
+ * hamper by the laundry table for the Clean up room task to fill.
  *
- * Each loose piece comes with a simple collider so the physics engine can make it a
- * dynamic body: the robot's base pushes litter out of its way as it drives. The bin is
- * fixed (and is furniture for the base's collision checks, in lib/stations.ts).
+ * Each loose piece has an id, a kind (trash, towel or mug) and a simple collider, so the
+ * physics engine makes it a dynamic body the hands can pick up. The bin and hamper are
+ * hollow and fixed (and are furniture for the base's path and collision checks).
  */
 import * as THREE from 'three'
 import { DOCKS, KITCHEN, LAUNDRY, furnitureRects, stationQuat, toWorld } from '../lib/stations'
-import { towelTextures } from './textures'
+import { towelTextures, wickerTextures } from './textures'
 
 export type PropShape =
   | { kind: 'ball'; r: number }
   | { kind: 'cyl'; r: number; h: number }
   | { kind: 'box'; hx: number; hy: number; hz: number; y?: number }
 
+export type ClutterKind = 'trash' | 'towel' | 'mug'
 export interface ClutterProp {
+  id: string
+  kind: ClutterKind
   obj: THREE.Object3D
   shape: PropShape
   /** kg per m³ of the collider */
@@ -27,10 +31,22 @@ export interface ClutterProp {
 export type ClutterStatic =
   | { kind: 'cyl'; x: number; z: number; r: number; h: number }
   | { kind: 'box'; x: number; z: number; w: number; d: number; h: number }
+  /** An open-topped container: a floor and a ring of walls, so things dropped in stay in. */
+  | { kind: 'tub'; x: number; z: number; r: number; h: number }
+/** Where a container stands (world), its radius and rim height. */
+export interface Container {
+  x: number
+  z: number
+  r: number
+  h: number
+}
 export interface Clutter {
   props: ClutterProp[]
   statics: ClutterStatic[]
+  bin: Container
+  hamper: Container
 }
+type Loose = Omit<ClutterProp, 'id' | 'kind'>
 
 /** Deterministic random numbers, so the mess is the same on every load. */
 function rng(seed: number) {
@@ -95,13 +111,13 @@ const PAPER = [mat('#f4f1ea', { roughness: 0.95, flatShading: true }), mat('#fdf
 const CAN_TEX = [labelTexture('#c8102e', '#ffffff', 'COLA'), labelTexture('#0f5132', '#a3e635', 'LIME'), labelTexture('#1e3a8a', '#93c5fd', 'FIZZ'), labelTexture('#f59e0b', '#7c2d12', 'ORNG')]
 const ALU = mat('#d4d8de', { metalness: 0.9, roughness: 0.3 })
 
-function paperBall(r: () => number): ClutterProp {
+function paperBall(r: () => number): Loose {
   const rad = 0.028 + r() * 0.014
   const m = new THREE.Mesh(jitter(new THREE.IcosahedronGeometry(rad, 2), rad * 0.45, r), PAPER[Math.floor(r() * PAPER.length)])
   return { obj: shadowed(m), shape: { kind: 'ball', r: rad * 0.92 }, density: 60, friction: 0.7 }
 }
 
-function sodaCan(r: () => number, crushed = false): ClutterProp {
+function sodaCan(r: () => number, crushed = false): Loose {
   const g = new THREE.Group()
   const h = crushed ? 0.06 : 0.122
   const body = new THREE.CylinderGeometry(0.033, 0.033, h, 24, crushed ? 6 : 1)
@@ -114,7 +130,7 @@ function sodaCan(r: () => number, crushed = false): ClutterProp {
   return { obj: shadowed(g), shape: { kind: 'cyl', r: 0.033, h }, density: crushed ? 150 : 90, friction: 0.5 }
 }
 
-function bottle(r: () => number): ClutterProp {
+function bottle(r: () => number): Loose {
   const g = new THREE.Group()
   const pts = [
     [0, -0.1], [0.032, -0.1], [0.034, -0.095], [0.034, 0.02], [0.03, 0.045], [0.014, 0.075], [0.013, 0.09], [0, 0.09],
@@ -130,7 +146,7 @@ function bottle(r: () => number): ClutterProp {
   return { obj: shadowed(g), shape: { kind: 'cyl', r: 0.034, h: 0.2 }, density: 40, friction: 0.4 }
 }
 
-function wrapper(r: () => number): ClutterProp {
+function wrapper(r: () => number): Loose {
   const w = 0.12 + r() * 0.06
   const d = 0.08 + r() * 0.04
   const geo = jitter(new THREE.PlaneGeometry(w, d, 6, 4), 0.02, r, [0.3, 0.3, 1])
@@ -142,7 +158,7 @@ function wrapper(r: () => number): ClutterProp {
   return { obj: shadowed(m), shape: { kind: 'box', hx: w / 2, hy: 0.006, hz: d / 2, y: 0.006 }, density: 80, friction: 0.9 }
 }
 
-function coffeeCup(): ClutterProp {
+function coffeeCup(): Loose {
   const g = new THREE.Group()
   const cup = new THREE.Mesh(new THREE.CylinderGeometry(0.044, 0.032, 0.13, 24), mat('#f5f5f4', { roughness: 0.8 }))
   const sleeve = new THREE.Mesh(new THREE.CylinderGeometry(0.0435, 0.038, 0.05, 24, 1, true), mat('#8b5a2b', { roughness: 0.95 }))
@@ -153,7 +169,7 @@ function coffeeCup(): ClutterProp {
   return { obj: shadowed(g), shape: { kind: 'cyl', r: 0.04, h: 0.14 }, density: 50, friction: 0.6 }
 }
 
-function mug(color: string): ClutterProp {
+function mug(color: string): Loose {
   const g = new THREE.Group()
   const ceramic = new THREE.MeshPhysicalMaterial({ color, roughness: 0.2, clearcoat: 0.8 })
   g.add(new THREE.Mesh(new THREE.CylinderGeometry(0.04, 0.038, 0.09, 28), ceramic))
@@ -167,7 +183,7 @@ function mug(color: string): ClutterProp {
   return { obj: shadowed(g), shape: { kind: 'cyl', r: 0.04, h: 0.09 }, density: 700, friction: 0.5 }
 }
 
-function towel(r: () => number, color: string, band: string): ClutterProp {
+function towel(r: () => number, color: string, band: string): Loose {
   const { length, half } = LAUNDRY.towel
   const w = 2 * half
   const geo = new THREE.PlaneGeometry(w, length, 28, 20)
@@ -190,20 +206,21 @@ function towel(r: () => number, color: string, band: string): ClutterProp {
   geo.computeVertexNormals()
   const tex = towelTextures(color, band)
   const m = new THREE.Mesh(geo, mat('#ffffff', { map: tex.map, bumpMap: tex.bump, bumpScale: 1.5, roughness: 0.95, side: THREE.DoubleSide }))
-  return { obj: shadowed(m), shape: { kind: 'box', hx: w * 0.36, hy: 0.012, hz: length * 0.38, y: 0.012 }, density: 250, friction: 1.0 }
+  // The collider is the bunched-up middle of the towel (so it fits through the hamper's opening).
+  return { obj: shadowed(m), shape: { kind: 'box', hx: 0.13, hy: 0.012, hz: 0.1, y: 0.012 }, density: 250, friction: 1.0 }
 }
 
-function pizzaBox(): ClutterProp {
+/** A small takeaway carton (it has to fit in the bin). */
+function takeawayBox(): Loose {
   const g = new THREE.Group()
   const card = mat('#c9a26b', { roughness: 0.95 })
-  const box = new THREE.Mesh(new THREE.BoxGeometry(0.32, 0.035, 0.32), [card, card, mat('#ffffff', { map: labelTexture('#c9a26b', '#b91c1c', 'PIZZA'), roughness: 0.95 }), card, card, card])
-  box.position.y = 0.0175
-  // A grease stain on the lid.
-  const stain = new THREE.Mesh(new THREE.CircleGeometry(0.04, 16), mat('#8a5a2b', { transparent: true, opacity: 0.45, roughness: 0.6 }))
+  const box = new THREE.Mesh(new THREE.BoxGeometry(0.14, 0.05, 0.1), [card, card, mat('#ffffff', { map: labelTexture('#c9a26b', '#b91c1c', 'TAKE'), roughness: 0.95 }), card, card, card])
+  box.position.y = 0.025
+  const stain = new THREE.Mesh(new THREE.CircleGeometry(0.022, 16), mat('#8a5a2b', { transparent: true, opacity: 0.45, roughness: 0.6 }))
   stain.rotation.x = -Math.PI / 2
-  stain.position.set(0.06, 0.0356, -0.05)
+  stain.position.set(0.03, 0.0506, -0.02)
   g.add(box, stain)
-  return { obj: shadowed(g), shape: { kind: 'box', hx: 0.16, hy: 0.0175, hz: 0.16, y: 0.0175 }, density: 120, friction: 0.8 }
+  return { obj: shadowed(g), shape: { kind: 'box', hx: 0.07, hy: 0.025, hz: 0.05, y: 0.025 }, density: 120, friction: 0.8 }
 }
 
 /** A flat spill: an irregular glossy puddle, just above the floor. */
@@ -231,17 +248,19 @@ function trashCan(r: () => number) {
   const g = new THREE.Group()
   const steel = mat('#c3c8cf', { metalness: 0.9, roughness: 0.33 })
   const black = mat('#15181c', { roughness: 0.55 })
-  const shell = new THREE.Mesh(new THREE.CylinderGeometry(T.r, T.r * 0.92, T.h - 0.03, 40), steel)
+  const shell = new THREE.Mesh(new THREE.CylinderGeometry(T.r, T.r * 0.92, T.h - 0.03, 40, 1, true), steel)
   shell.position.y = 0.03 + (T.h - 0.03) / 2
   const foot = new THREE.Mesh(new THREE.CylinderGeometry(T.r * 0.93, T.r * 0.95, 0.03, 40), black)
   foot.position.y = 0.015
   // Pedal out the front (local -x faces the room, like the station's own frame).
   const pedal = new THREE.Mesh(new THREE.BoxGeometry(0.07, 0.014, 0.08), black)
   pedal.position.set(-T.r - 0.02, 0.03, 0)
-  // Bag: a black liner bulging out of the top, folded over the rim.
-  const bag = new THREE.Mesh(jitter(new THREE.SphereGeometry(T.r * 0.98, 20, 10, 0, Math.PI * 2, 0, Math.PI / 2), 0.03, r), mat('#0b0d10', { roughness: 0.35, metalness: 0.1 }))
-  bag.scale.y = 0.45
-  bag.position.y = T.h
+  // An empty black liner inside, folded over the rim.
+  const liner = new THREE.Mesh(new THREE.CylinderGeometry(T.r - 0.006, T.r * 0.9, T.h - 0.04, 32, 1, true), mat('#0b0d10', { roughness: 0.35, metalness: 0.1, side: THREE.BackSide }))
+  liner.position.y = 0.04 + (T.h - 0.04) / 2
+  const bottom = new THREE.Mesh(new THREE.CircleGeometry(T.r * 0.9, 32), mat('#0b0d10', { roughness: 0.4 }))
+  bottom.rotation.x = -Math.PI / 2
+  bottom.position.y = 0.045
   const fold = new THREE.Mesh(new THREE.TorusGeometry(T.r + 0.002, 0.008, 8, 40), mat('#0b0d10', { roughness: 0.35 }))
   fold.rotation.x = Math.PI / 2
   fold.position.y = T.h - 0.01
@@ -251,22 +270,38 @@ function trashCan(r: () => number) {
   const lid = new THREE.Mesh(new THREE.CylinderGeometry(T.r + 0.005, T.r + 0.005, 0.02, 40), steel)
   lid.position.set(-T.r, 0.01, 0)
   lidG.add(lid)
-  lidG.rotation.z = -1.15
-  g.add(shell, foot, pedal, bag, fold, lidG)
-  // Rubbish poking out of the bag.
-  for (let i = 0; i < 4; i++) {
-    const b = paperBall(r).obj
-    const t = r() * Math.PI * 2
-    b.position.set(Math.cos(t) * T.r * 0.45, T.h + 0.05 + r() * 0.03, Math.sin(t) * T.r * 0.45)
-    g.add(b)
-  }
-  const can = sodaCan(r, true).obj
-  can.rotation.set(0.4, 0, 1.1)
-  can.position.set(0.02, T.h + 0.07, -0.05)
-  g.add(can)
+  lidG.rotation.z = -1.35 // propped open, ready for rubbish
+  g.add(shell, foot, pedal, liner, bottom, fold, lidG)
   const p = toWorld('kitchen', T.a, 0, T.b)
   g.position.copy(p)
   g.quaternion.copy(stationQuat('kitchen'))
+  return { obj: shadowed(g), pos: p }
+}
+
+/** A woven laundry hamper with an open top, by the laundry table. */
+function hamper() {
+  const H = LAUNDRY.hamper
+  const g = new THREE.Group()
+  const weave = wickerTextures([6, 3])
+  const wicker = mat('#ffffff', { map: weave.map, bumpMap: weave.bump, bumpScale: 2, roughness: 0.85, side: THREE.DoubleSide })
+  const wall = new THREE.Mesh(new THREE.CylinderGeometry(H.r, H.r * 0.88, H.h, 36, 1, true), wicker)
+  wall.position.y = H.h / 2
+  const floor = new THREE.Mesh(new THREE.CircleGeometry(H.r * 0.88, 36), mat('#6b4f2a', { roughness: 0.9 }))
+  floor.rotation.x = -Math.PI / 2
+  floor.position.y = 0.012
+  const rim = new THREE.Mesh(new THREE.TorusGeometry(H.r, 0.012, 10, 40), mat('#8a6a3c', { roughness: 0.8 }))
+  rim.rotation.x = Math.PI / 2
+  rim.position.y = H.h
+  // Rope handles either side.
+  for (const s of [-1, 1]) {
+    const handle = new THREE.Mesh(new THREE.TorusGeometry(0.04, 0.007, 8, 16, Math.PI), mat('#d6c7a1', { roughness: 0.9 }))
+    handle.position.set(0, H.h - 0.06, s * (H.r + 0.004))
+    handle.rotation.y = Math.PI / 2
+    g.add(handle)
+  }
+  g.add(wall, floor, rim)
+  const p = toWorld('laundry', H.a, 0, H.b)
+  g.position.copy(p)
   return { obj: shadowed(g), pos: p }
 }
 
@@ -278,11 +313,20 @@ export function buildClutter(scene: THREE.Scene, obstacles: { x: number; z: numb
 
   const bin = trashCan(r)
   scene.add(bin.obj)
-  const statics: ClutterStatic[] = [{ kind: 'cyl', x: bin.pos.x, z: bin.pos.z, r: T.r, h: T.h }]
+  const hp = hamper()
+  scene.add(hp.obj)
+  const H = LAUNDRY.hamper
+  const statics: ClutterStatic[] = [
+    { kind: 'tub', x: bin.pos.x, z: bin.pos.z, r: T.r, h: T.h },
+    { kind: 'tub', x: hp.pos.x, z: hp.pos.z, r: H.r, h: H.h },
+  ]
+  const count: Record<ClutterKind, number> = { trash: 0, towel: 0, mug: 0 }
 
   /** Put a prop on the floor at (x, z), lying (axis level) or standing, turned by yaw. */
-  const place = (pr: ClutterProp, x: number, z: number, yaw: number, lying: boolean) => {
+  const place = (loose: Loose, x: number, z: number, yaw: number, lying: boolean, kind: ClutterKind = 'trash') => {
+    const pr: ClutterProp = { ...loose, kind, id: `${kind}${count[kind]++}` }
     const o = pr.obj
+    o.name = pr.id
     const s = pr.shape
     if (s.kind === 'cyl' && lying) {
       // Turn to the heading first (Y), then tip over (X).
@@ -305,27 +349,27 @@ export function buildClutter(scene: THREE.Scene, obstacles: { x: number; z: numb
     puddle.position.x = s.x
     puddle.position.z = s.z
     scene.add(puddle)
-    place(mug('#b91c1c'), s.x + 0.05, s.z - 0.04, 0.6, true)
-    place(mug('#f8fafc'), s.x - 0.12, s.z + 0.1, 2.2, true)
+    place(mug('#b91c1c'), s.x + 0.05, s.z - 0.04, 0.6, true, 'mug')
+    place(mug('#f8fafc'), s.x - 0.12, s.z + 0.1, 2.2, true, 'mug')
     const far = at('kitchen', 0.05, 1.35)
-    place(mug('#1d4ed8'), far.x, far.z, 1.2, true)
+    place(mug('#1d4ed8'), far.x, far.z, 1.2, true, 'mug')
     const t = at('kitchen', 0.16, -0.72)
-    place(towel(r, '#e2e8f0', '#94a3b8'), t.x, t.z, 0.4, false)
+    place(towel(r, '#e2e8f0', '#94a3b8'), t.x, t.z, 0.4, false, 'towel')
     // Missed shots around the bin.
     for (let i = 0; i < 3; i++) {
       const p = at('kitchen', T.a - 0.3 - r() * 0.15, T.b + (r() - 0.5) * 0.4)
       place(paperBall(r), p.x, p.z, r() * 6, false)
     }
     const pz = at('kitchen', 0.12, T.b + 0.42)
-    place(pizzaBox(), pz.x, pz.z, 0.3, false)
+    place(takeawayBox(), pz.x, pz.z, 0.3, false)
   }
   // Laundry: towels dropped beside the table, one halfway across the room.
   {
-    const a = at('laundry', 0.3, 0.9)
-    place(towel(r, '#a5b4fc', '#e0e7ff'), a.x, a.z, 1.1, false)
-    const b = at('laundry', 0.55, -0.92)
-    place(towel(r, '#fca5a5', '#fee2e2'), b.x, b.z, -0.5, false)
-    place(towel(r, '#fde68a', '#fffbeb'), 0.75, -0.55, 2.0, false)
+    const a = at('laundry', 0.1, -1.05)
+    place(towel(r, '#a5b4fc', '#e0e7ff'), a.x, a.z, 1.1, false, 'towel')
+    const b = at('laundry', 0.55, -0.95)
+    place(towel(r, '#fca5a5', '#fee2e2'), b.x, b.z, -0.5, false, 'towel')
+    place(towel(r, '#fde68a', '#fffbeb'), 0.75, -0.55, 2.0, false, 'towel')
   }
 
   // Litter all over the floor, kept out of furniture, obstacles, the docks and the robot's start.
@@ -336,10 +380,11 @@ export function buildClutter(scene: THREE.Scene, obstacles: { x: number; z: numb
     for (const q of rects) if (x > q.x0 - pad && x < q.x1 + pad && z > q.z0 - pad && z < q.z1 + pad) return false
     for (const o of obstacles) if (Math.hypot(x - o.x, z - o.z) < o.r + pad + 0.05) return false
     if (Math.hypot(x - bin.pos.x, z - bin.pos.z) < T.r + pad + 0.05) return false
+    if (Math.hypot(x - hp.pos.x, z - hp.pos.z) < H.r + pad + 0.05) return false
     for (const p of props) if (Math.hypot(x - p.obj.position.x, z - p.obj.position.z) < 0.24) return false // a bottle is 20 cm long
     return true
   }
-  const makers: (() => [ClutterProp, boolean])[] = [
+  const makers: (() => [Loose, boolean])[] = [
     () => [paperBall(r), false],
     () => [paperBall(r), false],
     () => [sodaCan(r), r() < 0.75],
@@ -358,5 +403,10 @@ export function buildClutter(scene: THREE.Scene, obstacles: { x: number; z: numb
     place(pr, x, z, r() * Math.PI * 2, lying)
     placed++
   }
-  return { props, statics }
+  return {
+    props,
+    statics,
+    bin: { x: bin.pos.x, z: bin.pos.z, r: T.r, h: T.h },
+    hamper: { x: hp.pos.x, z: hp.pos.z, r: H.r, h: H.h },
+  }
 }

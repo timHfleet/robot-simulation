@@ -4,6 +4,7 @@
  * which the runner in Humanoid.tsx then executes one by one.
  */
 import * as THREE from 'three'
+import type { ClutterKind, Container, PropShape } from '../components/clutter'
 import { fk, torsoBase, type Side } from './kinematics'
 import { rad } from './math'
 import {
@@ -23,12 +24,13 @@ import {
   type StationId,
 } from './stations'
 
-export type TaskId = 'sort' | 'dishes' | 'fold' | 'wash'
+export type TaskId = 'sort' | 'dishes' | 'fold' | 'wash' | 'cleanup'
 export const TASKS: { id: TaskId; label: string; station: StationId; blurb: string }[] = [
   { id: 'sort', label: 'Sort blocks', station: 'sort', blurb: 'Pick each block and drop it in the bin of its colour, turning at the waist to reach across.' },
   { id: 'dishes', label: 'Load dishwasher', station: 'kitchen', blurb: 'Open the door, pull out the racks, load plates and cups, close up and start it.' },
   { id: 'fold', label: 'Fold towel', station: 'laundry', blurb: 'Take a towel from the basket, spread it flat by two corners, fold it in half twice and put it on the stack.' },
   { id: 'wash', label: 'Wash clothes', station: 'washer', blurb: 'Open the lid, move the clothes from the basket into the drum, close it and press start.' },
+  { id: 'cleanup', label: 'Clean up room', station: 'kitchen', blurb: 'Pick the rubbish off the floor into the bin, towels into the hamper and mugs into the dishwasher, steering round everything.' },
 ]
 
 /** A hand target in world coordinates: where the fingertips go and how the hand is turned. */
@@ -54,6 +56,8 @@ export type Mechanism =
 export type Act =
   | { k: 'say'; text: string }
   | { k: 'drive'; to: StationId }
+  /** Drive to a spot on the floor and face `yaw`, steering round furniture and litter (`except`: ids not to avoid). */
+  | { k: 'goto'; x: number; z: number; yaw: number; except?: string[]; what?: string }
   | { k: 'nudge'; d: number }
   | { k: 'lift'; h: number }
   | { k: 'move'; arms: Partial<Record<Side, ArmGoal>>; via?: boolean; slow?: boolean }
@@ -82,6 +86,19 @@ export interface PlanCtx {
   ids: (kind: string) => string[]
   /** World position of a named point on the towel ('top' = its highest point, 'centre' = its middle). */
   cloth: (feature: string) => THREE.Vector3
+  /** Floor clutter: collider shape and kind of a piece (null for station items). */
+  shape: (id: string) => PropShape | null
+  kindOf: (id: string) => ClutterKind | null
+  /** Where the robot is now. */
+  robot: () => { x: number; z: number; yaw: number }
+  /** Could the base stand here without touching furniture? */
+  free: (x: number, z: number, yaw: number) => boolean
+  /** Length of the drive there round furniture and litter (Infinity if there's no way). */
+  driveLength: (x: number, z: number, yaw: number, except: string[]) => number
+  /** What each hand is holding right now. */
+  held: () => Partial<Record<Side, string>>
+  bin: Container
+  hamper: Container
 }
 
 /** Arms hanging beside the body (used before driving off and at the end). */
@@ -228,30 +245,30 @@ function planSort(ctx: PlanCtx): Act[] {
 // ---------------------------------------------------------------------------
 // Load the dishwasher
 // ---------------------------------------------------------------------------
-function planDishes(ctx: PlanCtx): Act[] {
+// ---------------------------------------------------------------------------
+// Dishwasher door and racks (shared by Load dishwasher and Clean up room)
+// ---------------------------------------------------------------------------
+const kitchenFrame = () => {
   const st: StationId = 'kitchen'
-  const plates = ctx.ids('plate').filter((id) => ctx.item(id).where === 'home')
-  const cups = ctx.ids('cup').filter((id) => ctx.item(id).where === 'home')
-  if (!plates.length && !cups.length) return []
-  const K = KITCHEN
-  const fwd = dirWorld(st, 1, 0, 0)
-  const right = dirWorld(st, 0, 0, 1)
-  const W = (a: number, y: number, b: number) => toWorld(st, a, y, b)
-  const acts = arrive(st, 'Loading the dishwasher')
+  return { st, fwd: dirWorld(st, 1, 0, 0), right: dirWorld(st, 0, 0, 1), W: (a: number, y: number, b: number) => toWorld(st, a, y, b) }
+}
 
-  // Open the door: hook the handle, pull it down a little, then let it drop open.
+/** Open the door: hook the handle, pull it down a little, then let it drop open. */
+function doorOpenActs(): Act[] {
+  const K = KITCHEN
+  const { fwd, W } = kitchenFrame()
   const handleAt = (phi: number) => {
     const [a, y] = doorPoint(K.handle.u, K.handle.s, phi)
     return W(a, y, 0.04)
   }
-  acts.push(
+  const acts: Act[] = [
     { k: 'say', text: 'Opening the door' },
     { k: 'grip', side: 'R', g: 0.75 },
     { k: 'move', arms: { R: T(handleAt(0).addScaledVector(fwd, -0.08), fwd, UP) } },
     { k: 'move', arms: { R: T(handleAt(0), fwd, UP) }, slow: true },
     { k: 'grip', side: 'R', g: gripFor(0.02) },
     { k: 'bind', side: 'R', mech: { kind: 'door', u: K.handle.u, s: K.handle.s } },
-  )
+  ]
   const openDeg = Math.round((K.openByHand * 180) / Math.PI)
   for (let d = 10; d <= openDeg; d += 10) acts.push({ k: 'move', arms: { R: T(handleAt(rad(d)), fwd, UP) }, via: d < openDeg, slow: true })
   acts.push(
@@ -261,63 +278,37 @@ function planDishes(ctx: PlanCtx): Act[] {
     { k: 'animate', key: 'door', to: Math.PI / 2, dur: 1.1 },
     { k: 'move', arms: { R: tuck('R') } },
   )
+  return acts
+}
 
-  // Pull a rack out (or push it back in) by its front handle.
-  const rackHandle = (rack: RackId, out: number) => rackOrigin(rack, out).add(new THREE.Vector3(-0.015, K.racks[rack].wall + 0.02, 0))
-  const moveRack = (rack: RackId, from: number, to: number): Act[] => {
-    const h0 = rackHandle(rack, from)
-    const h1 = rackHandle(rack, to)
-    return [
-      { k: 'say', text: `${to > from ? 'Pulling out' : 'Pushing in'} the ${rack} rack` },
-      { k: 'lift', h: rack === 'lower' ? 0.86 : 1.0 },
-      { k: 'grip', side: 'R', g: 0.7 },
-      { k: 'move', arms: { R: T(W(h0.x - 0.08, h0.y + 0.04, 0.05), fwd, UP) } },
-      { k: 'move', arms: { R: T(W(h0.x, h0.y, 0.05), fwd, UP) }, slow: true },
-      { k: 'grip', side: 'R', g: gripFor(0.012) },
-      { k: 'bind', side: 'R', mech: { kind: 'rack', rack } },
-      { k: 'move', arms: { R: T(W(h1.x, h1.y, 0.05), fwd, UP) }, slow: true },
-      { k: 'grip', side: 'R', g: 0.7 },
-      { k: 'unbind', side: 'R' },
-      { k: 'move', arms: { R: T(W(h1.x - 0.08, h1.y + 0.1, 0.05), fwd, UP) }, via: true },
-      { k: 'move', arms: { R: tuck('R') } },
-    ]
-  }
+/** Pull a rack out (or push it back in) by its front handle. */
+function rackMoveActs(rack: RackId, from: number, to: number): Act[] {
+  const K = KITCHEN
+  const { fwd, W } = kitchenFrame()
+  const rackHandle = (out: number) => rackOrigin(rack, out).add(new THREE.Vector3(-0.015, K.racks[rack].wall + 0.02, 0))
+  const h0 = rackHandle(from)
+  const h1 = rackHandle(to)
+  return [
+    { k: 'say', text: `${to > from ? 'Pulling out' : 'Pushing in'} the ${rack} rack` },
+    { k: 'lift', h: rack === 'lower' ? 0.86 : 1.0 },
+    { k: 'grip', side: 'R', g: 0.7 },
+    { k: 'move', arms: { R: T(W(h0.x - 0.08, h0.y + 0.04, 0.05), fwd, UP) } },
+    { k: 'move', arms: { R: T(W(h0.x, h0.y, 0.05), fwd, UP) }, slow: true },
+    { k: 'grip', side: 'R', g: gripFor(0.012) },
+    { k: 'bind', side: 'R', mech: { kind: 'rack', rack } },
+    { k: 'move', arms: { R: T(W(h1.x, h1.y, 0.05), fwd, UP) }, slow: true },
+    { k: 'grip', side: 'R', g: 0.7 },
+    { k: 'unbind', side: 'R' },
+    { k: 'move', arms: { R: T(W(h1.x - 0.08, h1.y + 0.1, 0.05), fwd, UP) }, via: true },
+    { k: 'move', arms: { R: tuck('R') } },
+  ]
+}
 
-  const out = K.racks.lower.travel
-  if (plates.length) {
-    acts.push(...moveRack('lower', 0, out), { k: 'lift', h: 1.1 })
-    plates.forEach((id, i) => {
-      const { pos } = ctx.item(id)
-      const rim = up(pos, K.plate.r - 0.018)
-      const o = rackOrigin('lower', out)
-      const slotLocal: [number, number, number] = [K.plateSlotA, 0.01 + K.plate.r, K.plateSlots[i % K.plateSlots.length]]
-      const slotRim = up(W(o.x + slotLocal[0], o.y + slotLocal[1], slotLocal[2]), K.plate.r - 0.018)
-      acts.push(
-        { k: 'say', text: `Plate ${i + 1}: left hand pinches the rim` },
-        ...pickFromAbove(st, 'L', id, rim, right, K.plate.t, 0.1, 0.16, 30, true),
-        ...placeFromAbove(st, 'L', id, slotRim, right, 0.45, { container: 'kitchen.lower', pos: slotLocal, yaw: 0, where: 'rack' }, 0.14, 30, 0.012, true),
-      )
-    })
-    acts.push({ k: 'move', arms: { L: tuck('L') } }, ...moveRack('lower', out, 0))
-  }
-  if (cups.length) {
-    acts.push(...moveRack('upper', 0, out), { k: 'lift', h: 1.12 })
-    cups.forEach((id, i) => {
-      const { pos } = ctx.item(id)
-      const o = rackOrigin('upper', out)
-      const sl = K.cupSlots[i % K.cupSlots.length]
-      const slotLocal: [number, number, number] = [sl.a, K.cup.h / 2 + 0.004, sl.b]
-      const slot = W(o.x + slotLocal[0], o.y + slotLocal[1], slotLocal[2])
-      acts.push(
-        { k: 'say', text: `Cup ${i + 1}: right hand grips it from above` },
-        ...pickFromAbove(st, 'R', id, pos, undefined, 2 * K.cup.r, 0.1, 0.16, 30),
-        ...placeFromAbove(st, 'R', id, slot, undefined, Math.min(1, gripFor(2 * K.cup.r) + 0.25), { container: 'kitchen.upper', pos: slotLocal, yaw: 0, where: 'rack' }, 0.15, 30),
-      )
-    })
-    acts.push({ k: 'move', arms: { R: tuck('R') } }, ...moveRack('upper', out, 0))
-  }
-
-  // Close the door: back up, lift it by its free edge, drive back in, push it shut.
+/** Close the door: back up, lift it by its free edge, drive back in, push it shut (and press start). */
+function doorCloseActs(start: boolean): Act[] {
+  const K = KITCHEN
+  const { fwd, W } = kitchenFrame()
+  const acts: Act[] = []
   const edgeAt = (phi: number) => {
     const [a, y] = doorPoint(K.edge.u, K.edge.s, phi)
     return W(a, y, 0.04)
@@ -353,16 +344,70 @@ function planDishes(ctx: PlanCtx): Act[] {
   )
   for (let d = liftDeg - 10; d >= 0; d -= 10) acts.push({ k: 'move', arms: { R: T(pushAt(rad(d)), fwd) }, via: d > 0, slow: true })
   const btn = W(K.button.a, K.button.y, K.button.b)
+  acts.push({ k: 'unbind', side: 'R' }, { k: 'animate', key: 'door', to: 0, dur: 0.15 })
+  if (!start) {
+    acts.push(tuckHands())
+    return acts
+  }
   acts.push(
-    { k: 'unbind', side: 'R' },
-    { k: 'animate', key: 'door', to: 0, dur: 0.15 },
     { k: 'move', arms: { R: T(btn.clone().addScaledVector(fwd, -0.08), fwd) } },
     { k: 'move', arms: { R: T(btn.clone().addScaledVector(fwd, 0.004), fwd) }, slow: true },
     { k: 'set', key: 'dishOn', value: true },
     { k: 'move', arms: { R: T(btn.clone().addScaledVector(fwd, -0.08), fwd) }, via: true },
     tuckHands(),
-    { k: 'say', text: 'Dishwasher loaded and running' },
   )
+  return acts
+}
+
+function planDishes(ctx: PlanCtx): Act[] {
+  const st: StationId = 'kitchen'
+  const plates = ctx.ids('plate').filter((id) => ctx.item(id).where === 'home')
+  const cups = ctx.ids('cup').filter((id) => ctx.item(id).where === 'home')
+  if (!plates.length && !cups.length) return []
+  const K = KITCHEN
+  const fwd = dirWorld(st, 1, 0, 0)
+  const right = dirWorld(st, 0, 0, 1)
+  const W = (a: number, y: number, b: number) => toWorld(st, a, y, b)
+  const acts = arrive(st, 'Loading the dishwasher')
+
+  acts.push(...doorOpenActs())
+  const moveRack = rackMoveActs
+
+  const out = K.racks.lower.travel
+  if (plates.length) {
+    acts.push(...moveRack('lower', 0, out), { k: 'lift', h: 1.1 })
+    plates.forEach((id, i) => {
+      const { pos } = ctx.item(id)
+      const rim = up(pos, K.plate.r - 0.018)
+      const o = rackOrigin('lower', out)
+      const slotLocal: [number, number, number] = [K.plateSlotA, 0.01 + K.plate.r, K.plateSlots[i % K.plateSlots.length]]
+      const slotRim = up(W(o.x + slotLocal[0], o.y + slotLocal[1], slotLocal[2]), K.plate.r - 0.018)
+      acts.push(
+        { k: 'say', text: `Plate ${i + 1}: left hand pinches the rim` },
+        ...pickFromAbove(st, 'L', id, rim, right, K.plate.t, 0.1, 0.16, 30, true),
+        ...placeFromAbove(st, 'L', id, slotRim, right, 0.45, { container: 'kitchen.lower', pos: slotLocal, yaw: 0, where: 'rack' }, 0.14, 30, 0.012, true),
+      )
+    })
+    acts.push({ k: 'move', arms: { L: tuck('L') } }, ...moveRack('lower', out, 0))
+  }
+  if (cups.length) {
+    acts.push(...moveRack('upper', 0, out), { k: 'lift', h: 1.12 })
+    cups.forEach((id, i) => {
+      const { pos } = ctx.item(id)
+      const o = rackOrigin('upper', out)
+      const sl = K.cupSlots[i % K.cupSlots.length]
+      const slotLocal: [number, number, number] = [sl.a, K.cup.h / 2 + 0.004, sl.b]
+      const slot = W(o.x + slotLocal[0], o.y + slotLocal[1], slotLocal[2])
+      acts.push(
+        { k: 'say', text: `Cup ${i + 1}: right hand grips it from above` },
+        ...pickFromAbove(st, 'R', id, pos, undefined, 2 * K.cup.r, 0.1, 0.16, 30),
+        ...placeFromAbove(st, 'R', id, slot, undefined, Math.min(1, gripFor(2 * K.cup.r) + 0.25), { container: 'kitchen.upper', pos: slotLocal, yaw: 0, where: 'rack' }, 0.15, 30),
+      )
+    })
+    acts.push({ k: 'move', arms: { R: tuck('R') } }, ...moveRack('upper', out, 0))
+  }
+
+  acts.push(...doorCloseActs(true), { k: 'say', text: 'Dishwasher loaded and running' })
   return acts
 }
 
@@ -843,7 +888,308 @@ function planWash(ctx: PlanCtx): Act[] {
   return acts
 }
 
+// ---------------------------------------------------------------------------
+// Clean up the room: rubbish in the bin, towels in the hamper, mugs in the dishwasher
+// ---------------------------------------------------------------------------
+/** Torso height for picking things off the floor, and for carrying. */
+const FLOOR_LIFT = 0.52
+const CARRY_LIFT = 0.95
+/** How far the base's front edge is from its centre. */
+const BASE_FRONT = 0.33
+
+/** Holding pose for a hand that carries something while the other works: up in front of its shoulder. */
+const carry = (side: Side): Target => ({
+  frame: 'torso',
+  pos: new THREE.Vector3(0.26, -0.02, side === 'L' ? -0.33 : 0.33),
+  approach: new THREE.Vector3(0.2, -0.98, 0).normalize(),
+  keepWaist: true,
+})
+
+/** How far a piece reaches along the robot's forward direction from its centre, and its grip. */
+function graspOf(shape: PropShape, kind: ClutterKind) {
+  if (kind === 'towel') return { extent: Math.max(shape.kind === 'box' ? shape.hx : 0.15, 0.13), width: 0.008, y: 0.012 }
+  switch (shape.kind) {
+    case 'ball':
+      return { extent: shape.r, width: 2 * shape.r, y: shape.r }
+    case 'cyl':
+      return { extent: Math.max(shape.r, shape.h / 2), width: 2 * shape.r, y: 0 }
+    case 'box':
+      // Flat things (wrappers) are pinched; boxes gripped across their short side.
+      return shape.hy < 0.01
+        ? { extent: Math.max(shape.hx, shape.hz), width: 0.006, y: (shape.y ?? 0) + 0.002 }
+        : { extent: Math.max(shape.hx, shape.hz), width: 2 * Math.min(shape.hx, shape.hz), y: (shape.y ?? 0) }
+  }
+}
+
+/** World-space direction of a body's local axis. */
+const axisOf = (q: THREE.Quaternion, x: number, y: number, z: number) => new THREE.Vector3(x, y, z).applyQuaternion(q)
+
+function planCleanup(ctx: PlanCtx): Act[] {
+  const tries = new Map<string, number>()
+  const done = { bin: 0, hamper: 0, rack: 0 }
+  let dishwasherOpen = false
+  let mugSlot = 0
+  const K = KITCHEN
+
+  const floorIds = (kind: ClutterKind) => ctx.ids(kind).filter((id) => ctx.item(id).where === 'floor' && (tries.get(id) ?? 0) < 2)
+
+  /** Robot pose (centre, heading) that puts a piece in front of the given hand, ready to pick. */
+  const approachFor = (id: string, side: Side) => {
+    const { pos } = ctx.item(id)
+    const shape = ctx.shape(id)!
+    const kind = ctx.kindOf(id)!
+    const g = graspOf(shape, kind)
+    const r = ctx.robot()
+    // Any heading works: the fingers turn to close across the piece wherever the robot stands.
+    // Nearest-facing first, then round the clock in 45° steps.
+    const headings: number[] = []
+    const yaw0 = Math.atan2(-(pos.z - r.z), pos.x - r.x)
+    for (let k = 0; k < 8; k++) headings.push(yaw0 + (k % 2 ? 1 : -1) * Math.ceil(k / 2) * (Math.PI / 4))
+    // Keep the base's front edge clear of the whole piece, however it's turned (and a mug's handle).
+    const D = BASE_FRONT + g.extent + (kind === 'mug' ? 0.06 : 0.04)
+    const lateral = side === 'L' ? -0.2 : 0.2
+    let best: { x: number; z: number; yaw: number; len: number } | null = null
+    for (const yaw of headings) {
+      const f = new THREE.Vector3(Math.cos(yaw), 0, -Math.sin(yaw))
+      const rt = new THREE.Vector3(Math.sin(yaw), 0, Math.cos(yaw))
+      const x = pos.x - f.x * D - rt.x * lateral
+      const z = pos.z - f.z * D - rt.z * lateral
+      if (!ctx.free(x, z, yaw)) continue
+      const len = ctx.driveLength(x, z, yaw, [id])
+      if (len < (best?.len ?? Infinity)) best = { x, z, yaw, len }
+    }
+    return best
+  }
+
+  /** Drive up to a piece, then (planned on arrival) pick it up with `side`. */
+  const fetch = (id: string, side: Side, upright = false): Act[] => {
+    const ap = approachFor(id, side)
+    tries.set(id, (tries.get(id) ?? 0) + 1)
+    if (!ap) return [{ k: 'say', text: `Can't get to the ${ctx.kindOf(id) === 'trash' ? 'rubbish' : ctx.kindOf(id)} there: skipping it` }]
+    return [
+      { k: 'move', arms: { L: carry('L'), R: carry('R') } },
+      { k: 'lift', h: CARRY_LIFT },
+      { k: 'goto', x: ap.x, z: ap.z, yaw: ap.yaw, except: [id], what: `the ${ctx.kindOf(id)}` },
+      { k: 'plan', make: () => pickUp(id, side, upright) },
+    ]
+  }
+
+  /** Reach down and pick a piece off the floor, from wherever the robot ended up. */
+  const pickUp = (id: string, side: Side, upright: boolean): Act[] => {
+    const { pos, quat } = ctx.item(id)
+    const shape = ctx.shape(id)!
+    const kind = ctx.kindOf(id)!
+    const g = graspOf(shape, kind)
+    const r = ctx.robot()
+    const f = new THREE.Vector3(Math.cos(r.yaw), 0, -Math.sin(r.yaw))
+    const rt = new THREE.Vector3(Math.sin(r.yaw), 0, Math.cos(r.yaw))
+    // Too far from the piece (the drive failed, or something pushed it)? Try again later.
+    const local = pos.clone().sub(new THREE.Vector3(r.x, 0, r.z))
+    const ahead = local.dot(f)
+    if (ahead < BASE_FRONT || ahead > 0.75 || Math.abs(local.dot(rt)) > 0.4) return [{ k: 'say', text: `Not close enough to the ${kind}: trying again later` }]
+    // Close across a lying can (fingers along the robot's right); boxes across their short side.
+    let close = rt.clone()
+    const lying = shape.kind === 'cyl' && Math.abs(axisOf(quat, 0, 1, 0).y) < 0.5
+    if (lying) {
+      // Across the can's axis, whichever way it points.
+      const a = axisOf(quat, 0, 1, 0)
+      a.y = 0
+      close = new THREE.Vector3(-a.z, 0, a.x).normalize()
+      if (close.dot(rt) < 0) close.negate()
+    } else if (shape.kind === 'box' && g.width > 0.02) {
+      const ax = axisOf(quat, shape.hx < shape.hz ? 1 : 0, 0, shape.hx < shape.hz ? 0 : 1)
+      ax.y = 0
+      close = ax.normalize()
+    }
+    // Lean the fingers forward a little (it saves reach); mugs straight down so they can be stood up later.
+    const tilt = upright ? 0 : rad(28)
+    const approach = new THREE.Vector3(0, -Math.cos(tilt), 0).addScaledVector(f, Math.sin(tilt)).normalize()
+    close.addScaledVector(approach, -close.dot(approach)).normalize()
+    const at = new THREE.Vector3(pos.x, shape.kind === 'cyl' ? pos.y : g.y, pos.z)
+    const other: Side = side === 'L' ? 'R' : 'L'
+    return [
+      { k: 'move', arms: { [other]: carry(other) } },
+      { k: 'lift', h: FLOOR_LIFT },
+      { k: 'grip', side, g: Math.min(1, gripFor(Math.max(g.width, 0.02)) + 0.35) },
+      { k: 'move', arms: { [side]: T(at.clone().addScaledVector(approach, -0.12), approach, close) } },
+      { k: 'move', arms: { [side]: T(at, approach, close) }, slow: true },
+      { k: 'grip', side, g: gripFor(g.width) },
+      { k: 'grab', side, item: id },
+      { k: 'move', arms: { [side]: T(up(at, 0.22), approach, close) }, via: true },
+      { k: 'lift', h: CARRY_LIFT },
+      { k: 'move', arms: { [side]: carry(side) } },
+    ]
+  }
+
+  /** Drive to a container and let go of whatever each hand holds over it. */
+  const dropInto = (box: 'bin' | 'hamper'): Act[] => {
+    const held = ctx.held()
+    const sides = SIDES.filter((s) => held[s])
+    if (!sides.length) return []
+    const c = ctx[box]
+    const r = ctx.robot()
+    const D = c.r + BASE_FRONT + 0.04
+    let best: { x: number; z: number; yaw: number; len: number } | null = null
+    const yaw0 = Math.atan2(-(c.z - r.z), c.x - r.x)
+    for (let k = 0; k < 16; k++) {
+      const yaw = yaw0 + (k % 2 ? 1 : -1) * Math.ceil(k / 2) * (Math.PI / 8)
+      const x = c.x - Math.cos(yaw) * D
+      const z = c.z + Math.sin(yaw) * D
+      if (!ctx.free(x, z, yaw)) continue
+      const len = ctx.driveLength(x, z, yaw, [])
+      if (len < (best?.len ?? Infinity)) best = { x, z, yaw, len }
+    }
+    if (!best) return [{ k: 'say', text: `Can't reach the ${box}` }]
+    const acts: Act[] = [
+      { k: 'say', text: box === 'bin' ? 'Into the bin' : 'Into the hamper' },
+      { k: 'lift', h: CARRY_LIFT },
+      { k: 'goto', x: best.x, z: best.z, yaw: best.yaw, what: `the ${box}` },
+    ]
+    const centre = new THREE.Vector3(c.x, c.h + 0.16, c.z)
+    for (const s of sides) {
+      const id = held[s]!
+      acts.push(
+        { k: 'move', arms: { [s]: T(centre, DOWN) } },
+        { k: 'grip', side: s, g: 1 },
+        { k: 'release', side: s, item: id, container: 'kitchen', pos: [0, 0, 0], yaw: 0, where: box },
+        { k: 'move', arms: { [s]: carry(s) } },
+      )
+    }
+    return acts
+  }
+
+  /** Stand a mug the hand holds (lying, gripped from above) upright in a back-row slot of the upper rack. */
+  const rackMug = (side: Side): Act[] => {
+    const id = ctx.held()[side]
+    if (!id) return []
+    const { fwd, right, W } = kitchenFrame()
+    const sl = K.mugSlots[mugSlot % K.mugSlots.length]
+    mugSlot++
+    const o = rackOrigin('upper', K.racks.upper.travel)
+    const slotLocal: [number, number, number] = [sl.a, K.cup.h / 2 + 0.004, sl.b]
+    const slot = W(o.x + sl.a, o.y + K.cup.h / 2 + 0.03, sl.b)
+    // Fingers forward and closing along `right`: the mug's axis (along the hand) turns vertical.
+    return [
+      { k: 'move', arms: { [side]: T(slot.clone().addScaledVector(fwd, -0.14).addScaledVector(UP, 0.06), fwd, right) } },
+      { k: 'move', arms: { [side]: T(slot, fwd, right) }, slow: true },
+      { k: 'grip', side, g: 1 },
+      { k: 'release', side, item: id, container: 'kitchen.upper', pos: slotLocal, yaw: 0, where: 'rack' },
+      { k: 'move', arms: { [side]: T(slot.clone().addScaledVector(fwd, -0.16).addScaledVector(UP, 0.04), fwd, right) }, via: true },
+      { k: 'move', arms: { [side]: tuck(side) } },
+    ]
+  }
+
+  /** The next leg of the job, planned from the room as it is now. */
+  const next = (): Act[] => {
+    const r = ctx.robot()
+    const nearest = (ids: string[], n: number) =>
+      ids
+        .map((id) => ({ id, d: ctx.item(id).pos.distanceTo(new THREE.Vector3(r.x, 0, r.z)) }))
+        .sort((a, b) => a.d - b.d)
+        .slice(0, n)
+        .map((x) => x.id)
+    const loop: Act = { k: 'plan', make: next }
+    // 1. Rubbish, two pieces a trip (one in each hand), into the bin.
+    const trash = floorIds('trash')
+    if (trash.length) {
+      const [a] = nearest(trash, 1)
+      return [
+        ...fetch(a, 'L'),
+        {
+          k: 'plan',
+          make: () => {
+            const rest = floorIds('trash').filter((id) => id !== a)
+            return rest.length ? fetch(nearest(rest, 1)[0], 'R') : []
+          },
+        },
+        { k: 'plan', make: () => dropInto('bin') },
+        loop,
+      ]
+    }
+    // 2. Towels into the hamper.
+    const towels = floorIds('towel')
+    if (towels.length) {
+      const [a] = nearest(towels, 1)
+      return [
+        { k: 'say', text: 'Towels go in the hamper' },
+        ...fetch(a, 'L'),
+        {
+          k: 'plan',
+          make: () => {
+            const rest = floorIds('towel').filter((id) => id !== a)
+            return rest.length ? fetch(nearest(rest, 1)[0], 'R') : []
+          },
+        },
+        { k: 'plan', make: () => dropInto('hamper') },
+        loop,
+      ]
+    }
+    // 3. Mugs into the dishwasher: open it once, then bring them two at a time.
+    const mugs = floorIds('mug')
+    if (mugs.length) {
+      const acts: Act[] = []
+      if (!dishwasherOpen) {
+        dishwasherOpen = true
+        acts.push(
+          { k: 'say', text: 'Mugs go in the dishwasher: opening it first' },
+          { k: 'move', arms: { L: TUCK_Q, R: TUCK_Q } },
+          { k: 'lift', h: CARRY_LIFT },
+          { k: 'drive', to: 'kitchen' },
+          { k: 'lift', h: LIFTS.kitchen },
+          ...doorOpenActs(),
+          ...rackMoveActs('upper', 0, K.racks.upper.travel),
+        )
+      }
+      const [a] = nearest(mugs, 1)
+      acts.push(
+        ...fetch(a, 'L', true),
+        {
+          k: 'plan',
+          make: () => {
+            const rest = floorIds('mug').filter((id) => id !== a)
+            return rest.length ? fetch(nearest(rest, 1)[0], 'R', true) : []
+          },
+        },
+        { k: 'lift', h: CARRY_LIFT },
+        { k: 'drive', to: 'kitchen' },
+        { k: 'lift', h: 1.12 },
+        { k: 'plan', make: () => [...rackMug('L'), ...rackMug('R')] },
+        loop,
+      )
+      return acts
+    }
+    // 4. All done: close the dishwasher if it was opened, and report.
+    const acts: Act[] = []
+    if (dishwasherOpen) {
+      dishwasherOpen = false
+      acts.push(
+        { k: 'drive', to: 'kitchen' },
+        { k: 'lift', h: LIFTS.kitchen },
+        ...rackMoveActs('upper', K.racks.upper.travel, 0),
+        ...doorCloseActs(false),
+      )
+    }
+    const left = ['trash', 'towel', 'mug'].flatMap((k) => ctx.ids(k).filter((id) => ctx.item(id).where === 'floor')).length
+    done.bin = ctx.ids('trash').filter((id) => ctx.item(id).where === 'bin').length
+    done.hamper = ctx.ids('towel').filter((id) => ctx.item(id).where === 'hamper').length
+    done.rack = ctx.ids('mug').filter((id) => ctx.item(id).where === 'rack').length
+    acts.push(
+      { k: 'move', arms: { L: TUCK_Q, R: TUCK_Q } },
+      { k: 'lift', h: CARRY_LIFT },
+      {
+        k: 'say',
+        text: `Room cleaned up: ${done.bin} pieces of rubbish in the bin, ${done.hamper} towels in the hamper, ${done.rack} mugs in the dishwasher${left ? ` (${left} left that it couldn't reach)` : ''}`,
+      },
+    )
+    return acts
+  }
+
+  return [{ k: 'say', text: 'Cleaning up the room' }, { k: 'move', arms: { L: TUCK_Q, R: TUCK_Q } }, { k: 'lift', h: CARRY_LIFT }, { k: 'plan', make: next }]
+}
+
 export function planTask(id: TaskId, ctx: PlanCtx, opts: { towelsLeft: number }): Act[] {
+  // Cleaning up works low and carries things, so its arms never hang (they'd hit the floor).
+  if (id === 'cleanup') return planCleanup(ctx)
   const acts = id === 'sort' ? planSort(ctx) : id === 'dishes' ? planDishes(ctx) : id === 'fold' ? planFold(ctx, opts.towelsLeft) : planWash(ctx)
   // With the dishwasher door open a hanging arm would pass through it, so there the
   // free arm stays tucked until the end.
