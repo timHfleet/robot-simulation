@@ -10,7 +10,7 @@
  */
 import * as THREE from 'three'
 import { WAIST_X, fk, solveIK, torsoBase, waistFor, type IKResult, type KeepOut, type Side } from './kinematics'
-import { KEEP_OUT, toWorld, type StationId } from './stations'
+import { DOCKS, KEEP_OUT, toWorld, type StationId } from './stations'
 import type { ArmGoal, Target } from './tasks'
 
 export interface HandGoal {
@@ -122,12 +122,43 @@ export function waistForMove(arms: Partial<Record<Side, ArmGoal>>, robot: RobotP
 }
 
 /** A station's obstacles in the robot frame, for where the robot stands now. */
+/**
+ * Every station's surfaces, exactly where they are relative to the robot however it stands
+ * (each box keeps its station's orientation), plus round containers on the floor. Used when
+ * the robot works around the room rather than docked square to one station.
+ */
+/** Extra room round every keep-out box: the solver keeps the arm's centre line clear, and its links are ~5 cm thick. */
+const PAD = 0.03
+
+export function keepOutsAll(robot: RobotPose, round: { x: number; z: number; r: number; h: number }[]): KeepOut[] {
+  const out: KeepOut[] = []
+  for (const st of Object.keys(KEEP_OUT) as StationId[]) {
+    const rot = DOCKS[st].yaw - robot.yaw
+    // Station-frame offsets from the robot: world offset turned into the station's axes.
+    const rel = (a: number, b: number) => toWorld(st, a, 0, b).sub(new THREE.Vector3(robot.x, 0, robot.z)).applyAxisAngle(Y, -DOCKS[st].yaw)
+    for (const o of KEEP_OUT[st]) {
+      const p = rel(o.a0, o.b0)
+      const q = rel(o.a1, o.b1)
+      // The hand too: working on the floor next to furniture, it mustn't tip into it.
+      // 3 cm above the surface too: the solver keeps the arm's centre line clear, and the links are ~5 cm thick.
+      out.push({ x0: Math.min(p.x, q.x) - PAD, x1: Math.max(p.x, q.x) + PAD, z0: Math.min(p.z, q.z) - PAD, z1: Math.max(p.z, q.z) + PAD, y: o.y + PAD, hand: true, rot })
+    }
+  }
+  for (const c of round) {
+    const p = new THREE.Vector3(c.x - robot.x, 0, c.z - robot.z).applyAxisAngle(Y, -robot.yaw)
+    out.push({ x0: p.x - c.r - PAD, x1: p.x + c.r + PAD, z0: p.z - c.r - PAD, z1: p.z + c.r + PAD, y: c.h + PAD, hand: true })
+  }
+  return out
+}
+
 export function keepOutsFor(station: StationId, robot: RobotPose): KeepOut[] {
   const toRobot = (a: number, b: number) =>
     toWorld(station, a, 0, b).sub(new THREE.Vector3(robot.x, 0, robot.z)).applyAxisAngle(Y, -robot.yaw)
   return KEEP_OUT[station].map((o) => {
     const p = toRobot(o.a0, o.b0)
     const q = toRobot(o.a1, o.b1)
-    return { x0: Math.min(p.x, q.x), x1: Math.max(p.x, q.x), z0: Math.min(p.z, q.z), z1: Math.max(p.z, q.z), y: o.y, hand: o.hand }
+    // 3 cm above the surface: the solver keeps the arm's centre line clear, and the links are ~5 cm thick.
+    // ...and 3 cm round the sides, for the same reason.
+    return { x0: Math.min(p.x, q.x) - PAD, x1: Math.max(p.x, q.x) + PAD, z0: Math.min(p.z, q.z) - PAD, z1: Math.max(p.z, q.z) + PAD, y: o.y + PAD, hand: o.hand }
   })
 }

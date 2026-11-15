@@ -30,7 +30,7 @@ import {
 } from '../lib/kinematics'
 import { Button, Card, Segmented, Slider, Stat } from './ui'
 import { DOCKS, ITEMS, KITCHEN, LAUNDRY, STAGING, doorAngleFor, foldAngleFor, furnitureRects, lidAngleFor, toLocal, toWorld, type StationId } from '../lib/stations'
-import { handPath, keepOutsFor, pathSteps, toRobotGoal, waistForMove, type HandGoal } from '../lib/motion'
+import { handPath, keepOutsAll, keepOutsFor, pathSteps, toRobotGoal, waistForMove, type HandGoal } from '../lib/motion'
 import { TASKS, planTask, type Act, type Mechanism, type PlanCtx, type TaskId } from '../lib/tasks'
 import { buildClutter, type Clutter } from './clutter'
 import { FloorGrid, planPath, pathLength, type Disc, type Pt } from '../lib/pathPlan'
@@ -129,6 +129,28 @@ function blockedAt(x: number, z: number, yaw: number) {
     }
   }
   return false
+}
+
+/**
+ * Is the space the arms take up with the torso lowered (to pick something off the floor)
+ * clear of furniture and obstacles? It spans the base and both elbows, and reaches forward
+ * to where the working hand comes down. Nothing taller than the floor may be in it.
+ */
+function armsClearAt(x: number, z: number, yaw: number) {
+  const c = Math.cos(yaw)
+  const sn = Math.sin(yaw)
+  for (let u = -0.2; u <= 0.48 + 1e-9; u += 0.04)
+    for (let v = -0.58; v <= 0.58 + 1e-9; v += 0.04) {
+      const px = x + c * u + sn * v
+      const pz = z - sn * u + c * v
+      for (const r of FURNITURE_RECTS) if (px > r.x0 && px < r.x1 && pz > r.z0 && pz < r.z1) return false
+      for (const o of OBSTACLES) {
+        if (o.kind === 'crate') {
+          if (Math.abs(px - o.x) < o.w / 2 && Math.abs(pz - o.z) < o.d / 2) return false
+        } else if (Math.hypot(px - o.x, pz - o.z) < o.r) return false
+      }
+    }
+  return true
 }
 
 type Seg = { kind: 'turn'; yaw: number } | { kind: 'line'; x: number; z: number; vmax: number }
@@ -1224,6 +1246,7 @@ export default function Humanoid() {
       held: () => (phys ? { ...phys.stats().held } : {}),
       robot: () => ({ x: sim.x, z: sim.z, yaw: sim.yaw }),
       free: (x, z, yaw) => !blockedAt(x, z, yaw),
+      workClear: (x, z, yaw) => armsClearAt(x, z, yaw),
       driveLength: (x, z, yaw, except) => gotoLength(x, z, yaw, except),
       bin: w.clutter.bin,
       hamper: w.clutter.hamper,
@@ -1267,7 +1290,9 @@ export default function Humanoid() {
      * where it ends, or null if there's no need (or no way).
      */
     const escapeSeg = (soft: Disc[] = floorLitter()): { seg: Seg; at: Pt } | null => {
-      if (!FLOOR_GRID.isHard(sim.x, sim.z)) return null
+      // Room to turn here: clear of furniture, and of litter (the corners sweep round).
+      const turnable = (px: number, pz: number) => !FLOOR_GRID.isHard(px, pz) && soft.every((d) => Math.hypot(d.x - px, d.z - pz) >= 0.46 + d.r)
+      if (turnable(sim.x, sim.z)) return null
       const fx = Math.cos(sim.yaw)
       const fz = -Math.sin(sim.yaw)
       let fallback: { seg: Seg; at: Pt } | null = null
@@ -1278,7 +1303,7 @@ export default function Humanoid() {
           const z = sim.z + dir * fz * d
           if (blockedAt(x, z, sim.yaw)) break
           if (litterUnder(x, z, sim.yaw, soft)) dirty = true
-          if (!FLOOR_GRID.isHard(x, z)) {
+          if (turnable(x, z)) {
             const out = { seg: { kind: 'line' as const, x, z, vmax: 0.25 }, at: { x, z } }
             if (!dirty) return out // the way with no litter in it
             fallback ??= out
@@ -1289,7 +1314,7 @@ export default function Humanoid() {
       return fallback
     }
     /** Would the base, standing here, be on top of any of these loose things? */
-    const litterUnder = (x: number, z: number, yaw: number, soft: Disc[], margin = 0.03) => {
+    const litterUnder = (x: number, z: number, yaw: number, soft: Disc[], margin = 0.05) => {
       const c = Math.cos(yaw)
       const sn = Math.sin(yaw)
       for (const d of soft) {
@@ -1317,20 +1342,36 @@ export default function Humanoid() {
      * so it plans to a point backed off along the final heading, then rolls straight in.
      * Returns null if there's no way there.
      */
-    const planGoto = (x: number, z: number, yaw: number, except: string[] = []): Seg[] | null => {
-      if (blockedAt(x, z, yaw)) return null
-      // Steer round everything on the way, the target too: only the final pose may be beside it.
-      const soft = floorLitter()
+    const planGoto = (x: number, z: number, yaw: number, except: string[] = [], strict = true): Seg[] | null => {
+      // The spot must hold with a little heading error too (driving straight in, the base steers a touch).
+      if (blockedAt(x, z, yaw) || blockedAt(x, z, yaw + 0.05) || blockedAt(x, z, yaw - 0.05)) return null
+      const soft = floorLitter() // the route steers round everything, the fetched piece too
+      const others = floorLitter(except) // only the final spot may be right beside the fetched piece
       const fx = Math.cos(yaw)
       const fz = -Math.sin(yaw)
+      // Where to finish turning: backed off along the final heading until the base can turn freely
+      // there (clear of furniture, and of litter so the sweeping corners touch nothing), then it
+      // rolls straight in.
+      const turnable = (px: number, pz: number) => !FLOOR_GRID.isHard(px, pz) && soft.every((d) => Math.hypot(d.x - px, d.z - pz) >= 0.46 + d.r)
       let back = 0
-      while (back <= 0.8 && FLOOR_GRID.isHard(x - fx * back, z - fz * back)) back += 0.05
-      if (back > 0.8) return null
-      for (let k = 0; k <= 10; k++) if (blockedAt(x - fx * back * (k / 10), z - fz * back * (k / 10), yaw)) return null
+      while (back <= 1.2 && !turnable(x - fx * back, z - fz * back)) back += 0.05
+      if (back > 1.2) {
+        if (strict) return null
+        back = 0
+        while (back <= 0.8 && FLOOR_GRID.isHard(x - fx * back, z - fz * back)) back += 0.05
+        if (back > 0.8) return null
+      }
+      for (let k = 0; k <= 12; k++) if (blockedAt(x - fx * back * (k / 12), z - fz * back * (k / 12), yaw)) return null
       const pre = { x: x - fx * back, z: z - fz * back }
+      // Rolling in must not run over anything but the piece being fetched (which it stops short of).
+      if (strict) for (let k = 0; k <= 12; k++) if (litterUnder(pre.x + (x - pre.x) * (k / 12), pre.z + (z - pre.z) * (k / 12), yaw, others)) return null
       const esc = escapeSeg(soft)
       const start = esc ? esc.at : { x: sim.x, z: sim.z }
-      const pts = Math.hypot(pre.x - start.x, pre.z - start.z) < 0.03 ? [] : planPath(FLOOR_GRID, start, pre, soft)
+      let pts: Pt[] | null = []
+      if (Math.hypot(pre.x - start.x, pre.z - start.z) >= 0.03) {
+        // The route itself always tries to touch nothing first.
+        pts = planPath(FLOOR_GRID, start, pre, soft, 0.46, true) ?? (strict ? null : planPath(FLOOR_GRID, start, pre, soft))
+      }
       if (!pts) return null
       const segs = [...(esc ? [esc.seg] : []), ...segsAlong(start, pts)]
       segs.push({ kind: 'turn', yaw })
@@ -1342,7 +1383,8 @@ export default function Humanoid() {
      * or rolling over it on the last straight bit, counts as 5 m extra, so a clean spot wins.
      */
     const gotoLength = (x: number, z: number, yaw: number, except: string[] = []) => {
-      const segs = planGoto(x, z, yaw, except)
+      const clean = planGoto(x, z, yaw, except, true)
+      const segs = clean ?? planGoto(x, z, yaw, except, false)
       if (!segs) return Infinity
       const soft = floorLitter(except)
       const last = segs[segs.length - 1]
@@ -1351,7 +1393,8 @@ export default function Humanoid() {
       for (let k = 0; k <= 8 && !dirty; k++) dirty = litterUnder(from.x + ((x - from.x) * k) / 8, from.z + ((z - from.z) * k) / 8, yaw, soft)
       // Turning to the final heading sweeps the corners round: nothing within reach of them either.
       if (!dirty) dirty = soft.some((d) => Math.hypot(d.x - from.x, d.z - from.z) < 0.46 + d.r)
-      const penalty = dirty ? 5 : 0
+      // A drive that has to brush past litter is a last resort.
+      const penalty = clean ? 0 : 20 + (dirty ? 5 : 0)
       const pts = segs.flatMap((sg) => (sg.kind === 'line' ? [{ x: sg.x, z: sg.z }] : []))
       // Each stop to turn costs time too: count it as a little extra distance.
       return pathLength({ x: sim.x, z: sim.z }, pts) + 0.1 * segs.filter((sg) => sg.kind === 'turn').length + penalty
@@ -1383,7 +1426,8 @@ export default function Humanoid() {
       }
       if (Math.hypot(sg.x - cx, sg.z - cz) > 0.03) {
         // Round furniture and litter to the staging point (straight there if the planner can't find a way).
-        const pts = planPath(FLOOR_GRID, { x: cx, z: cz }, sg, floorLitter())
+        const lit = floorLitter()
+        const pts = planPath(FLOOR_GRID, { x: cx, z: cz }, sg, lit, 0.46, true) ?? planPath(FLOOR_GRID, { x: cx, z: cz }, sg, lit)
         if (pts) segs.push(...segsAlong({ x: cx, z: cz }, pts, 0.8))
         else segs.push({ kind: 'turn', yaw: Math.atan2(-(sg.z - cz), sg.x - cx) }, { kind: 'line', x: sg.x, z: sg.z, vmax: 0.8 })
       }
@@ -1463,7 +1507,7 @@ export default function Humanoid() {
           sim.blockedT = 0
           break
         case 'goto': {
-          const segs = planGoto(a.x, a.z, a.yaw, a.except)
+          const segs = planGoto(a.x, a.z, a.yaw, a.except, true) ?? planGoto(a.x, a.z, a.yaw, a.except, false)
           if (segs) sim.path = segs
           else say(`No clear way to ${a.what ?? 'there'}`)
           sim.blockedT = 0
@@ -1484,7 +1528,9 @@ export default function Humanoid() {
           const w1 = waistForMove(a.arms, robot, lift, w0)
           const station = TASKS.find((x) => x.id === sim.task!.id)!.station
           // Tables, tubs, the basket and machines the arm must stay above, where the robot stands now.
-          const keepOut = keepOutsFor(station, robot)
+          // Cleaning up, the robot works all round the room at any angle: keep clear of every
+          // station's furniture and of the bin and hamper, wherever they are relative to it.
+          const keepOut = sim.task!.id === 'cleanup' ? keepOutsAll(robot, [w.clutter.bin, w.clutter.hamper]) : keepOutsFor(station, robot)
           // The robot's own base: reaching down to the floor, the elbow and forearm stay above it.
           keepOut.push({ x0: -0.34, x1: 0.34, z0: -0.31, z1: 0.31, y: 0.36, hand: false })
           const goals: Partial<Record<Side, HandGoal>> = {}
@@ -1862,7 +1908,9 @@ export default function Humanoid() {
             const cap = Math.min(seg.vmax, st.maxSpeed)
             vT = clamp(along * 1.6, -cap, cap)
             if (along > 0.1) wT = clamp(2.5 * wrap(Math.atan2(-dz, dx) - sim.yaw), -1, 1)
-            if ((dist < 0.006 || Math.abs(along) < 0.004) && Math.abs(sim.v) < 0.03) {
+            // Arrived, or as near as the base can get (within 3 cm, with furniture stopping it).
+            if (((dist < 0.006 || Math.abs(along) < 0.004) && Math.abs(sim.v) < 0.03) || (dist < 0.03 && sim.blockedFor > 0.2)) {
+              sim.blockedFor = 0
               sim.v = 0
               vT = 0
               sim.path.shift()
@@ -2204,6 +2252,7 @@ export default function Humanoid() {
       // Testing aid: advance `seconds` of simulated time in steps of `dt`, without drawing.
       Object.assign(window, {
         __sim: sim,
+        __ctx: () => planCtx(),
         __ff: (seconds: number, dt = 0.02) => {
           for (let t = 0; t < seconds; t += dt) {
             ffDt = dt

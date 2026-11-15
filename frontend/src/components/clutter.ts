@@ -270,7 +270,7 @@ function trashCan(r: () => number) {
   const lid = new THREE.Mesh(new THREE.CylinderGeometry(T.r + 0.005, T.r + 0.005, 0.02, 40), steel)
   lid.position.set(-T.r, 0.01, 0)
   lidG.add(lid)
-  lidG.rotation.z = -1.35 // propped open, ready for rubbish
+  lidG.rotation.z = -1.9 // tipped right back, clear of the opening
   g.add(shell, foot, pedal, liner, bottom, fold, lidG)
   const p = toWorld('kitchen', T.a, 0, T.b)
   g.position.copy(p)
@@ -349,18 +349,23 @@ export function buildClutter(scene: THREE.Scene, obstacles: { x: number; z: numb
     puddle.position.x = s.x
     puddle.position.z = s.z
     scene.add(puddle)
-    place(mug('#b91c1c'), s.x + 0.05, s.z - 0.04, 0.6, true, 'mug')
-    place(mug('#f8fafc'), s.x - 0.12, s.z + 0.1, 2.2, true, 'mug')
-    const far = at('kitchen', 0.05, 1.35)
+    // Kitchen coordinates (a out from the counter, which starts at a = 0.38), about 30 cm apart.
+    const m0 = at('kitchen', 0.15, 0.88)
+    place(mug('#b91c1c'), m0.x, m0.z, 0.6, true, 'mug')
+    const m1 = at('kitchen', -0.1, 1.08)
+    place(mug('#f8fafc'), m1.x, m1.z, 2.2, true, 'mug')
+    const far = at('kitchen', 0.08, 1.36)
     place(mug('#1d4ed8'), far.x, far.z, 1.2, true, 'mug')
     const t = at('kitchen', 0.16, -0.72)
     place(towel(r, '#e2e8f0', '#94a3b8'), t.x, t.z, 0.4, false, 'towel')
     // Missed shots around the bin.
-    for (let i = 0; i < 3; i++) {
-      const p = at('kitchen', T.a - 0.3 - r() * 0.15, T.b + (r() - 0.5) * 0.4)
+    // In front of the bin and off past the end of the counter, a good 30 cm apart.
+    const misses: [number, number][] = [[0.14, -2.16], [-0.12, -1.86], [0.3, -2.42]]
+    for (let i = 0; i < misses.length; i++) {
+      const p = at('kitchen', misses[i][0], misses[i][1])
       place(paperBall(r), p.x, p.z, r() * 6, false)
     }
-    const pz = at('kitchen', 0.12, T.b + 0.42)
+    const pz = at('kitchen', -0.02, -1.3)
     place(takeawayBox(), pz.x, pz.z, 0.3, false)
   }
   // Laundry: towels dropped beside the table, one halfway across the room.
@@ -400,7 +405,7 @@ export function buildClutter(scene: THREE.Scene, obstacles: { x: number; z: numb
   for (let tries = 0; placed < SCATTERED && tries < 2000; tries++) {
     const x = -1.55 + r() * 4.2
     const z = (r() - 0.5) * 5.2
-    if (!clear(x, z, 0.08)) continue
+    if (!clear(x, z, 0.15)) continue // room for the robot to reach it without touching the furniture
     const [pr, lying] = makers[Math.floor(r() * makers.length)]()
     place(pr, x, z, r() * Math.PI * 2, lying)
     placed++

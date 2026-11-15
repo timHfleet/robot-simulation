@@ -172,7 +172,7 @@ export const LAUNDRY = {
   basket: { a0: 0.4, a1: 0.7, b0: -0.6, b1: -0.3, wall: 0.012, h: 0.11 },
   /** Where folded towels are stacked, on the right of the table. */
   stack: { a: 0.52, b: 0.38 },
-  /** Laundry hamper on the floor past the right end of the table (centre, radius, rim height). */
+  /** Laundry hamper on the floor past the end of the table away from the kitchen (centre, radius, rim height). */
   hamper: { a: 0.6, b: 1.05, r: 0.23, h: 0.48 },
   /** Folds in order: left side, right side, then bottom half up. */
   folds: [

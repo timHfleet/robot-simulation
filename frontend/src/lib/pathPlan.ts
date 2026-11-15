@@ -92,9 +92,20 @@ const turnClear = (p: Pt, soft: Disc[], body: number) => soft.every((d) => Math.
  * (parked at a dock, say), the path first heads straight for the nearest clear cell.
  */
 /** `body`: how close litter may come to the base's centre, the radius its corners sweep turning on the spot. */
-export function planPath(grid: FloorGrid, start: Pt, goal: Pt, soft: Disc[], body = 0.46): Pt[] | null {
+export function planPath(grid: FloorGrid, start: Pt, goal: Pt, soft: Disc[], body = 0.46, strict = false): Pt[] | null {
   const n = grid.n
   if (grid.isHard(goal.x, goal.z)) return null
+  // Strict: loose things are walls too (no cell within the turning circle of one), so the
+  // base never touches them. Otherwise they only cost, and the base may brush past.
+  const blocked = new Uint8Array(n * n)
+  if (strict) {
+    for (const d of soft) {
+      const reach = d.r + body
+      for (let i = grid.i(d.x - reach); i <= grid.i(d.x + reach); i++)
+        for (let j = grid.j(d.z - reach); j <= grid.j(d.z + reach); j++) if (Math.hypot(grid.x(i) - d.x, grid.z(j) - d.z) - d.r < body) blocked[i * n + j] = 1
+    }
+    if (blocked[grid.i(goal.x) * n + grid.j(goal.z)]) return null
+  }
   const gi = grid.i(goal.x)
   const gj = grid.j(goal.z)
   let si = grid.i(start.x)
@@ -173,7 +184,7 @@ export function planPath(grid: FloorGrid, start: Pt, goal: Pt, soft: Disc[], bod
       const nj = cj + dj
       if (ni < 0 || nj < 0 || ni >= n || nj >= n) continue
       const k = ni * n + nj
-      if (grid.hard[k] || closed[k]) continue
+      if (grid.hard[k] || blocked[k] || closed[k]) continue
       const g = gScore[c] + len * RES * (1 + cost[k])
       if (g < gScore[k]) {
         gScore[k] = g
@@ -200,7 +211,7 @@ export function planPath(grid: FloorGrid, start: Pt, goal: Pt, soft: Disc[], bod
     for (let k = 0; k <= m; k++) {
       const x = a.x + ((b.x - a.x) * k) / m
       const z = a.z + ((b.z - a.z) * k) / m
-      if (grid.isHard(x, z)) return Infinity
+      if (grid.isHard(x, z) || blocked[grid.i(x) * n + grid.j(z)]) return Infinity
       c += softCost(x, z, soft, body) * (d / m)
     }
     return c

@@ -93,6 +93,8 @@ export interface PlanCtx {
   robot: () => { x: number; z: number; yaw: number }
   /** Could the base stand here without touching furniture? */
   free: (x: number, z: number, yaw: number) => boolean
+  /** Is the space the arms use when the torso is lowered (round and in front of the base) clear of furniture? */
+  workClear: (x: number, z: number, yaw: number) => boolean
   /** Length of the drive there round furniture and litter (Infinity if there's no way). */
   driveLength: (x: number, z: number, yaw: number, except: string[]) => number
   /** What each hand is holding right now. */
@@ -893,14 +895,14 @@ function planWash(ctx: PlanCtx): Act[] {
 // ---------------------------------------------------------------------------
 /** Torso height for picking things off the floor, and for carrying. */
 const FLOOR_LIFT = 0.52
-const CARRY_LIFT = 0.95
+const CARRY_LIFT = 1.05 // arms ride above every work surface (the washer's top is 0.88 m)
 /** How far the base's front edge is from its centre. */
 const BASE_FRONT = 0.33
 
 /** Holding pose for a hand that carries something while the other works: up in front of its shoulder. */
 const carry = (side: Side): Target => ({
   frame: 'torso',
-  pos: new THREE.Vector3(0.26, -0.02, side === 'L' ? -0.33 : 0.33),
+  pos: new THREE.Vector3(0.26, -0.02, side === 'L' ? -0.26 : 0.26),
   approach: new THREE.Vector3(0.2, -0.98, 0).normalize(),
   keepWaist: true,
 })
@@ -945,6 +947,8 @@ function planCleanup(ctx: PlanCtx): Act[] {
     const headings: number[] = []
     const yaw0 = Math.atan2(-(pos.z - r.z), pos.x - r.x)
     for (let k = 0; k < 8; k++) headings.push(yaw0 + (k % 2 ? 1 : -1) * Math.ceil(k / 2) * (Math.PI / 4))
+    // And square to the room (the furniture is), which fits best beside a counter or table.
+    for (let k = 0; k < 8; k++) headings.push((k * Math.PI) / 4)
     // Keep the base's front edge clear of the whole piece, however it's turned (and a mug's handle).
     const D = BASE_FRONT + g.extent + (kind === 'mug' ? 0.06 : 0.04)
     const lateral = side === 'L' ? -0.2 : 0.2
@@ -954,7 +958,8 @@ function planCleanup(ctx: PlanCtx): Act[] {
       const rt = new THREE.Vector3(Math.sin(yaw), 0, Math.cos(yaw))
       const x = pos.x - f.x * D - rt.x * lateral
       const z = pos.z - f.z * D - rt.z * lateral
-      if (!ctx.free(x, z, yaw)) continue
+      // Lowered to pick up, the arms and elbows spread round the base: nothing may be there.
+      if (!ctx.free(x, z, yaw) || !ctx.workClear(x, z, yaw)) continue
       const len = ctx.driveLength(x, z, yaw, [id])
       if (len < (best?.len ?? Infinity)) best = { x, z, yaw, len }
     }
@@ -1015,7 +1020,8 @@ function planCleanup(ctx: PlanCtx): Act[] {
       { k: 'move', arms: { [side]: T(at, approach, close) }, slow: true },
       { k: 'grip', side, g: gripFor(g.width) },
       { k: 'grab', side, item: id },
-      { k: 'move', arms: { [side]: T(up(at, 0.22), approach, close) }, via: true },
+      // Up and back toward the robot, away from any furniture beyond the piece.
+      { k: 'move', arms: { [side]: T(up(at, 0.22).addScaledVector(f, -0.12), approach, close) }, via: true },
       { k: 'lift', h: CARRY_LIFT },
       { k: 'move', arms: { [side]: carry(side) } },
     ]
@@ -1028,7 +1034,7 @@ function planCleanup(ctx: PlanCtx): Act[] {
     if (!sides.length) return []
     const c = ctx[box]
     const r = ctx.robot()
-    const D = c.r + BASE_FRONT + 0.04
+    const D = c.r + BASE_FRONT + 0.07
     let best: { x: number; z: number; yaw: number; len: number } | null = null
     const yaw0 = Math.atan2(-(c.z - r.z), c.x - r.x)
     for (let k = 0; k < 16; k++) {
@@ -1046,10 +1052,13 @@ function planCleanup(ctx: PlanCtx): Act[] {
       { k: 'goto', x: best.x, z: best.z, yaw: best.yaw, what: `the ${box}` },
     ]
     const centre = new THREE.Vector3(c.x, c.h + 0.16, c.z)
+    // Fingers leaning 30° toward the container: the wrist stays nearer the robot, well within reach.
+    const f = new THREE.Vector3(Math.cos(best.yaw), 0, -Math.sin(best.yaw))
+    const lean = DOWN.clone().multiplyScalar(Math.cos(rad(30))).addScaledVector(f, Math.sin(rad(30)))
     for (const s of sides) {
       const id = held[s]!
       acts.push(
-        { k: 'move', arms: { [s]: T(centre, DOWN) } },
+        { k: 'move', arms: { [s]: T(centre, lean) } },
         { k: 'grip', side: s, g: 1 },
         { k: 'release', side: s, item: id, container: 'kitchen', pos: [0, 0, 0], yaw: 0, where: box },
         { k: 'move', arms: { [s]: carry(s) } },
@@ -1172,7 +1181,8 @@ function planCleanup(ctx: PlanCtx): Act[] {
     const left = ['trash', 'towel', 'mug'].flatMap((k) => ctx.ids(k).filter((id) => ctx.item(id).where === 'floor')).length
     done.bin = ctx.ids('trash').filter((id) => ctx.item(id).where === 'bin').length
     done.hamper = ctx.ids('towel').filter((id) => ctx.item(id).where === 'hamper').length
-    done.rack = ctx.ids('mug').filter((id) => ctx.item(id).where === 'rack').length
+    // In the rack, upright or not: the final rack check says which (if any) need standing up.
+    done.rack = ctx.ids('mug').filter((id) => ['rack', 'misplaced'].includes(ctx.item(id).where)).length
     acts.push(
       { k: 'move', arms: { L: TUCK_Q, R: TUCK_Q } },
       { k: 'lift', h: CARRY_LIFT },

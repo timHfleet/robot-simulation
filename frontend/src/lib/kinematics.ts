@@ -295,6 +295,8 @@ export interface KeepOut {
   z1: number
   y: number
   hand: boolean
+  /** The box's own frame is turned by this much about the vertical from the robot's (rad); x/z bounds are in that frame. */
+  rot?: number
 }
 
 /** Distance from the shoulder-roll joint to the fingertips with the arm straight. */
@@ -396,15 +398,18 @@ function dlsAttempt(
           if (hand && !b.hand) continue
           const m = 0.02
           const top = b.y + 0.035
-          if (pt.x < b.x0 - m || pt.x > b.x1 + m || pt.z < b.z0 - m || pt.z > b.z1 + m || pt.y >= top) continue
+          // Into the box's own frame (furniture the robot stands at an angle to).
+          const q = b.rot ? pt.clone().applyAxisAngle(Y_AXIS, -b.rot) : pt
+          if (q.x < b.x0 - m || q.x > b.x1 + m || q.z < b.z0 - m || q.z > b.z1 + m || q.y >= top) continue
           const opts: [THREE.Vector3, number][] = [
-            [new THREE.Vector3(0, 1, 0), top - pt.y],
-            [new THREE.Vector3(-1, 0, 0), pt.x - (b.x0 - m)],
-            [new THREE.Vector3(1, 0, 0), b.x1 + m - pt.x],
-            [new THREE.Vector3(0, 0, -1), pt.z - (b.z0 - m)],
-            [new THREE.Vector3(0, 0, 1), b.z1 + m - pt.z],
+            [new THREE.Vector3(0, 1, 0), top - q.y],
+            [new THREE.Vector3(-1, 0, 0), q.x - (b.x0 - m)],
+            [new THREE.Vector3(1, 0, 0), b.x1 + m - q.x],
+            [new THREE.Vector3(0, 0, -1), q.z - (b.z0 - m)],
+            [new THREE.Vector3(0, 0, 1), b.z1 + m - q.z],
           ]
           const [dir, d] = opts.reduce((x, y) => (y[1] < x[1] ? y : x))
+          if (b.rot) dir.applyAxisAngle(Y_AXIS, b.rot)
           if (!best || d > best.d) best = { dir, d }
         }
         if (!best) continue
