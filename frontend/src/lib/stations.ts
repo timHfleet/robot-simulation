@@ -100,27 +100,35 @@ export const KITCHEN = {
   trash: { a: 0.62, b: -1.72, r: 0.16, h: 0.6 },
   /** Undermount sink in the right-hand run, and its faucet behind it. */
   sink: { a0: 0.5, a1: 0.86, b0: 0.9, b1: 1.3, depth: 0.2 },
-  /** Tall cabinet around the dishwasher. */
-  cabinet: { a0: 0.62, a1: 1.12, b0: -0.28, b1: 0.28, top: 1.32 },
-  door: { hingeA: 0.62, hingeY: 0.55, height: 0.6, width: 0.5, thick: 0.04 },
+  /**
+   * Built-in dishwasher under the worktop, between the two runs: its body (top = the worktop's
+   * underside), and a door hinged at the bottom just above the toe kick, flush with the
+   * cabinet doors. Open flat, the door reaches out toward the room and the racks roll out over it.
+   */
+  cabinet: { a0: 0.42, a1: 0.98, b0: -0.28, b1: 0.28, top: 0.83 },
+  door: { hingeA: 0.42, hingeY: 0.1, height: 0.7, width: 0.55, thick: 0.04 },
   /** Door-local points (u = out of the outer face, s = up the door from the hinge). */
-  handle: { u: -0.045, s: 0.56 },
-  edge: { u: 0, s: 0.6 },
-  push: { u: -0.035, s: 0.45 },
+  handle: { u: -0.045, s: 0.65 },
+  edge: { u: 0, s: 0.7 },
+  push: { u: -0.035, s: 0.5 },
   openByHand: THREE.MathUtils.degToRad(30),
   liftTo: THREE.MathUtils.degToRad(40),
   racks: {
-    lower: { floor: 0.6, frontA: 0.66, depth: 0.42, width: 0.46, wall: 0.05, travel: 0.32 },
-    upper: { floor: 0.88, frontA: 0.66, depth: 0.42, width: 0.46, wall: 0.04, travel: 0.32 },
+    lower: { floor: 0.17, frontA: 0.46, depth: 0.42, width: 0.48, wall: 0.05, travel: 0.38 },
+    upper: { floor: 0.5, frontA: 0.46, depth: 0.42, width: 0.48, wall: 0.04, travel: 0.38 },
   },
-  button: { a: 0.62, y: 1.2, b: 0.16 },
+  /** Where the robot stands to work the dishwasher: beside the door (it folds down over the floor in front). */
+  dishPose: { a: 0, b: -0.62 },
+  /** Start button on the door's front, top right (station coordinates with the door shut). */
+  button: { a: 0.395, y: 0.74, b: 0.2 },
   plate: { r: 0.1, t: 0.012 },
   cup: { r: 0.04, h: 0.09 },
   /** Drying rack on the left counter: plates stand with their faces along b. */
   plateRack: { a: 0.47, b0: -0.56, b1: -0.32, slots: [-0.37, -0.44, -0.51] },
+  /** Cups on a drying mat on the left counter, past the plate rack (within reach from beside the dishwasher). */
   cups: [
-    { a: 0.46, b: 0.37 },
-    { a: 0.46, b: 0.48 },
+    { a: 0.46, b: -0.8 },
+    { a: 0.46, b: -0.92 },
   ],
   /** Slots in rack-local coordinates (a from the rack front). */
   plateSlots: [-0.18, -0.11, -0.04],
@@ -138,9 +146,9 @@ export const KITCHEN = {
   ],
   /** Back-row slots in the upper rack for mugs brought in from the floor (Clean up room). */
   mugSlots: [
-    { a: 0.28, b: -0.19 },
-    { a: 0.28, b: -0.095 },
-    { a: 0.28, b: 0.0 },
+    { a: 0.28, b: -0.2 },
+    { a: 0.28, b: -0.08 },
+    { a: 0.28, b: 0.04 },
   ],
 }
 export type RackId = 'lower' | 'upper'

@@ -151,6 +151,19 @@ export function keepOutsAll(robot: RobotPose, round: { x: number; z: number; r: 
   return out
 }
 
+/** Extra keep-outs: round things and world-aligned boxes (x/z in world), each with a top the arm stays above. */
+export function keepOutsRound(robot: RobotPose, round: { x: number; z: number; r: number; h: number }[], boxes: { rect: { x0: number; x1: number; z0: number; z1: number }; y: number }[] = []): KeepOut[] {
+  const out: KeepOut[] = []
+  for (const c of round) {
+    const p = new THREE.Vector3(c.x - robot.x, 0, c.z - robot.z).applyAxisAngle(Y, -robot.yaw)
+    out.push({ x0: p.x - c.r - PAD, x1: p.x + c.r + PAD, z0: p.z - c.r - PAD, z1: p.z + c.r + PAD, y: c.h + PAD, hand: true })
+  }
+  // A world-aligned box, in a frame turned by the robot's heading (rot = -yaw), measured from the robot.
+  for (const b of boxes)
+    out.push({ x0: b.rect.x0 - robot.x - PAD, x1: b.rect.x1 - robot.x + PAD, z0: b.rect.z0 - robot.z - PAD, z1: b.rect.z1 - robot.z + PAD, y: b.y + PAD, hand: true, rot: -robot.yaw })
+  return out
+}
+
 export function keepOutsFor(station: StationId, robot: RobotPose): KeepOut[] {
   const toRobot = (a: number, b: number) =>
     toWorld(station, a, 0, b).sub(new THREE.Vector3(robot.x, 0, robot.z)).applyAxisAngle(Y, -robot.yaw)

@@ -30,7 +30,7 @@ import {
 } from '../lib/kinematics'
 import { Button, Card, Segmented, Slider, Stat } from './ui'
 import { DOCKS, ITEMS, KITCHEN, LAUNDRY, STAGING, doorAngleFor, foldAngleFor, furnitureRects, lidAngleFor, toLocal, toWorld, type StationId } from '../lib/stations'
-import { handPath, keepOutsAll, keepOutsFor, pathSteps, toRobotGoal, waistForMove, type HandGoal } from '../lib/motion'
+import { handPath, keepOutsAll, keepOutsFor, keepOutsRound, pathSteps, toRobotGoal, waistForMove, type HandGoal } from '../lib/motion'
 import { TASKS, planTask, type Act, type Mechanism, type PlanCtx, type TaskId } from '../lib/tasks'
 import { ballOf, buildClutter, type Clutter } from './clutter'
 import { FloorGrid, planPath, pathLength, type Disc, type Pt } from '../lib/pathPlan'
@@ -90,6 +90,15 @@ const OBSTACLES: Obstacle[] = [
 const FURNITURE_RECTS = furnitureRects()
 /** How far the base's corners reach from its centre: the clearance it needs to turn on the spot. */
 const TURN_R = 0.47 // 0.44 to the corners, plus slack for the 5 cm grid
+/** The dishwasher door lying open (with the racks out over it): kitchen a -0.30..0.42, |b| < 0.29. */
+const DOOR_OPEN_RECT = (() => {
+  const p = toWorld('kitchen', KITCHEN.door.hingeA - KITCHEN.door.height - 0.02, 0, -0.29)
+  const q = toWorld('kitchen', KITCHEN.door.hingeA, 0, 0.29)
+  return { x0: Math.min(p.x, q.x), x1: Math.max(p.x, q.x), z0: Math.min(p.z, q.z), z1: Math.max(p.z, q.z) }
+})()
+/** Is the dishwasher door open (then its footprint is an obstacle for the base)? Set every frame. */
+let doorOpen = false
+const extraRects = () => (doorOpen ? [DOOR_OPEN_RECT] : [])
 /** Where the base's centre may go: clear of furniture, crates, barrels and the walls by TURN_R. */
 const FLOOR_GRID = new FloorGrid(
   BOUNDS,
@@ -101,6 +110,19 @@ const FLOOR_GRID = new FloorGrid(
   TURN_R,
   0.45,
 )
+/** The same with the dishwasher door open. */
+const FLOOR_GRID_DOOR = new FloorGrid(
+  BOUNDS,
+  [
+    ...FURNITURE_RECTS,
+    DOOR_OPEN_RECT,
+    ...OBSTACLES.flatMap((o) => (o.kind === 'crate' ? [{ x0: o.x - o.w / 2, x1: o.x + o.w / 2, z0: o.z - o.d / 2, z1: o.z + o.d / 2 }] : [])),
+  ],
+  OBSTACLES.flatMap((o) => (o.kind === 'barrel' ? [{ x: o.x, z: o.z, r: o.r }] : [])),
+  TURN_R,
+  0.45,
+)
+const grid = () => (doorOpen ? FLOOR_GRID_DOOR : FLOOR_GRID)
 /** The base's footprint: front and back from the centre, and half its width. */
 const FOOT = { front: 0.33, back: 0.33, half: 0.29 }
 
@@ -122,6 +144,7 @@ function blockedAt(x: number, z: number, yaw: number) {
     const px = x + c * u + sn * v
     const pz = z - sn * u + c * v
     for (const r of FURNITURE_RECTS) if (px > r.x0 && px < r.x1 && pz > r.z0 && pz < r.z1) return true
+    for (const r of extraRects()) if (px > r.x0 && px < r.x1 && pz > r.z0 && pz < r.z1) return true
     for (const o of OBSTACLES) {
       if (o.kind === 'crate') {
         if (Math.abs(px - o.x) < o.w / 2 && Math.abs(pz - o.z) < o.d / 2) return true
@@ -143,6 +166,7 @@ function armsClearAt(x: number, z: number, yaw: number) {
     for (let v = -0.58; v <= 0.58 + 1e-9; v += 0.04) {
       const px = x + c * u + sn * v
       const pz = z - sn * u + c * v
+      // (The open dishwasher door lies at floor level: arms working above it don't touch it.)
       for (const r of FURNITURE_RECTS) if (px > r.x0 && px < r.x1 && pz > r.z0 && pz < r.z1) return false
       for (const o of OBSTACLES) {
         if (o.kind === 'crate') {
@@ -1246,6 +1270,7 @@ export default function Humanoid() {
       shape: (id) => clutterOf(id)?.shape ?? null,
       kindOf: (id) => clutterOf(id)?.kind ?? null,
       held: () => ({ ...(phys ? phys.stats().held : {}), ...clothHeld }),
+      tcp: (side) => tcpWorld(side),
       robot: () => ({ x: sim.x, z: sim.z, yaw: sim.yaw }),
       free: (x, z, yaw) => !blockedAt(x, z, yaw),
       workClear: (x, z, yaw) => armsClearAt(x, z, yaw),
@@ -1300,7 +1325,7 @@ export default function Humanoid() {
      */
     const escapeSeg = (soft: Disc[] = floorLitter()): { seg: Seg; at: Pt } | null => {
       // Room to turn here: clear of furniture, and of litter (the corners sweep round).
-      const turnable = (px: number, pz: number) => !FLOOR_GRID.isHard(px, pz) && soft.every((d) => Math.hypot(d.x - px, d.z - pz) >= 0.46 + d.r)
+      const turnable = (px: number, pz: number) => !grid().isHard(px, pz) && soft.every((d) => Math.hypot(d.x - px, d.z - pz) >= 0.46 + d.r)
       if (turnable(sim.x, sim.z)) return null
       const fx = Math.cos(sim.yaw)
       const fz = -Math.sin(sim.yaw)
@@ -1361,13 +1386,13 @@ export default function Humanoid() {
       // Where to finish turning: backed off along the final heading until the base can turn freely
       // there (clear of furniture, and of litter so the sweeping corners touch nothing), then it
       // rolls straight in.
-      const turnable = (px: number, pz: number) => !FLOOR_GRID.isHard(px, pz) && soft.every((d) => Math.hypot(d.x - px, d.z - pz) >= 0.46 + d.r)
+      const turnable = (px: number, pz: number) => !grid().isHard(px, pz) && soft.every((d) => Math.hypot(d.x - px, d.z - pz) >= 0.46 + d.r)
       let back = 0
       while (back <= 1.2 && !turnable(x - fx * back, z - fz * back)) back += 0.05
       if (back > 1.2) {
         if (strict) return null
         back = 0
-        while (back <= 0.8 && FLOOR_GRID.isHard(x - fx * back, z - fz * back)) back += 0.05
+        while (back <= 0.8 && grid().isHard(x - fx * back, z - fz * back)) back += 0.05
         if (back > 0.8) return null
       }
       for (let k = 0; k <= 12; k++) if (blockedAt(x - fx * back * (k / 12), z - fz * back * (k / 12), yaw)) return null
@@ -1379,7 +1404,7 @@ export default function Humanoid() {
       let pts: Pt[] | null = []
       if (Math.hypot(pre.x - start.x, pre.z - start.z) >= 0.03) {
         // The route itself always tries to touch nothing first.
-        pts = planPath(FLOOR_GRID, start, pre, soft, 0.46, true) ?? (strict ? null : planPath(FLOOR_GRID, start, pre, soft))
+        pts = planPath(grid(), start, pre, soft, 0.46, true) ?? (strict ? null : planPath(grid(), start, pre, soft))
       }
       if (!pts) return null
       const segs = [...(esc ? [esc.seg] : []), ...segsAlong(start, pts)]
@@ -1436,7 +1461,7 @@ export default function Humanoid() {
       if (Math.hypot(sg.x - cx, sg.z - cz) > 0.03) {
         // Round furniture and litter to the staging point (straight there if the planner can't find a way).
         const lit = floorLitter()
-        const pts = planPath(FLOOR_GRID, { x: cx, z: cz }, sg, lit, 0.46, true) ?? planPath(FLOOR_GRID, { x: cx, z: cz }, sg, lit)
+        const pts = planPath(grid(), { x: cx, z: cz }, sg, lit, 0.46, true) ?? planPath(grid(), { x: cx, z: cz }, sg, lit)
         if (pts) segs.push(...segsAlong({ x: cx, z: cz }, pts, 0.8))
         else segs.push({ kind: 'turn', yaw: Math.atan2(-(sg.z - cz), sg.x - cx) }, { kind: 'line', x: sg.x, z: sg.z, vmax: 0.8 })
       }
@@ -1536,7 +1561,11 @@ export default function Humanoid() {
           const robot = { x: sim.x, z: sim.z, yaw: sim.yaw }
           const w0 = sim.waistT
           // The waist turns so the working shoulder(s) are a comfortable distance from their targets.
-          const w1 = waistForMove(a.arms, robot, lift, w0)
+          let w1 = waistForMove(a.arms, robot, lift, w0)
+          // Beside the dishwasher the left counter is close on the left: the waist only turns the
+          // right shoulder forward there (which swings the left one back, away from the counter).
+          const dp = toWorld('kitchen', KITCHEN.dishPose.a, 0, KITCHEN.dishPose.b)
+          if (Math.hypot(sim.x - dp.x, sim.z - dp.z) < 0.2) w1 = clamp(w1, -0.05, 1.4)
           const station = TASKS.find((x) => x.id === sim.task!.id)!.station
           // Tables, tubs, the basket and machines the arm must stay above, where the robot stands now.
           // Cleaning up, the robot works all round the room at any angle: keep clear of every
@@ -1544,6 +1573,8 @@ export default function Humanoid() {
           const keepOut = sim.task!.id === 'cleanup' ? keepOutsAll(robot, [w.clutter.bin, w.clutter.hamper]) : keepOutsFor(station, robot)
           // The robot's own base: reaching down to the floor, the elbow and forearm stay above it.
           keepOut.push({ x0: -0.34, x1: 0.34, z0: -0.31, z1: 0.31, y: 0.36, hand: false })
+          // The dishwasher door lying open: the whole arm, hand too, stays above it.
+          if (S.mech.door > 1) keepOut.push(...keepOutsRound(robot, [], [{ rect: DOOR_OPEN_RECT, y: KITCHEN.door.hingeY + KITCHEN.door.thick }]))
           const goals: Partial<Record<Side, HandGoal>> = {}
           for (const side of SIDES) {
             const g = a.arms[side]
@@ -2067,12 +2098,15 @@ export default function Humanoid() {
       updateBindings(S.mech)
       for (const an of sim.anims) {
         an.t = Math.min(1, an.t + dt / an.dur)
-        const e = an.to > an.from ? an.t * an.t : 1 - (1 - an.t) * (1 - an.t) // falls open like gravity
+        // A door falls open like gravity; a rack rolls smoothly, easing in and out (no jolt to tip a plate).
+        const isRack = an.key === 'lowerRack' || an.key === 'upperRack'
+        const e = isRack ? an.t * an.t * (3 - 2 * an.t) : an.to > an.from ? an.t * an.t : 1 - (1 - an.t) * (1 - an.t)
         S.mech[an.key] = an.from + (an.to - an.from) * e
       }
       sim.anims = sim.anims.filter((an) => an.t < 1)
       S.apply(sim.time, dt)
       cloth.step(dt, { L: toLocal('laundry', tcpWorld('L')), R: toLocal('laundry', tcpWorld('R')) })
+      doorOpen = S.mech.door > 0.15
       // The towels on the floor: cloth too. They meet the robot's base as a solid box.
       w.clutter.cloth.step(
         dt,

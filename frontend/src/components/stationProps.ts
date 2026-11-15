@@ -358,6 +358,7 @@ function kitchenFittings(g: THREE.Group, pick: THREE.Object3D[]) {
   }
   const [cl, cr] = K.counters
   worktop(cl.a0, cl.a1, cl.b0, cl.b1)
+  worktop(cl.a0, cl.a1, K.cabinet.b0, K.cabinet.b1) // straight over the dishwasher
   worktop(cr.a0, cr.a1, cr.b0, S.b0)
   worktop(cr.a0, cr.a1, S.b1, cr.b1)
   worktop(cr.a0, S.a0, S.b0, S.b1)
@@ -401,18 +402,9 @@ function kitchenFittings(g: THREE.Group, pick: THREE.Object3D[]) {
     g.add(m)
   }
   const cb = K.cabinet
-  wallPiece(K.wallA, K.wallA + 0.04, -1.75, cb.b0)
-  wallPiece(K.wallA, K.wallA + 0.04, cb.b1, 1.75)
-  wallPiece(cb.a1, cb.a1 + 0.04, cb.b0, cb.b1) // the dishwasher's tall unit is built into a niche
-  {
-    // The niche stops at the top of the wall cabinets: plain wall above, flush with the rest.
-    const m = slab(K.wallA, K.wallA + 0.04, U.y1, wallTop, cb.b0, cb.b1, paint(cb.b1 - cb.b0, wallTop - U.y1))
-    m.castShadow = false
-    g.add(m)
-  }
+  wallPiece(K.wallA, K.wallA + 0.04, -1.75, 1.75)
   for (const [b0, b1] of [
-    [cl.b0, cl.b1],
-    [cr.b0, cr.b1],
+    [cl.b0, cr.b1], // one run of tile, over the dishwasher too
   ]) {
     const w = b1 - b0
     const h = U.y0 - top
@@ -427,7 +419,7 @@ function kitchenFittings(g: THREE.Group, pick: THREE.Object3D[]) {
   // Over each run, and a bridge cabinet over the dishwasher's tall unit.
   const runs = [
     { b0: cl.b0, b1: cl.b1, a1: K.wallA, y0: U.y0, glass: -1 },
-    { b0: cb.b0, b1: cb.b1, a1: cb.a1, y0: cb.top + 0.02, glass: -1 },
+    { b0: cb.b0, b1: cb.b1, a1: K.wallA, y0: U.y0, glass: -1 },
     { b0: cr.b0, b1: cr.b1, a1: K.wallA, y0: U.y0, glass: 1 },
   ]
   for (const r of runs) {
@@ -503,31 +495,22 @@ interface KitchenParts {
 function buildKitchen(g: THREE.Group, pick: THREE.Object3D[]): KitchenParts {
   const K = KITCHEN
   kitchenFittings(g, pick)
-  // Tall cabinet with the dishwasher cavity.
+  // Built-in dishwasher under the worktop: a recessed kick plate below the door, the body's
+  // sides and back round a stainless tub (the worktop above comes from kitchenFittings).
   const cb = K.cabinet
   const d = K.door
   const cavityTop = d.hingeY + d.height
   g.add(
-    slab(cb.a0, cb.a1, 0, d.hingeY, cb.b0, cb.b1, M.cabinet),
-    slab(cb.a0, cb.a1, cavityTop, cb.top, cb.b0, cb.b1, M.cabinet),
-    slab(cb.a0, cb.a1, d.hingeY, cavityTop, cb.b0, cb.b0 + 0.03, M.cabinet),
-    slab(cb.a0, cb.a1, d.hingeY, cavityTop, cb.b1 - 0.03, cb.b1, M.cabinet),
-    slab(cb.a1 - 0.03, cb.a1, d.hingeY, cavityTop, cb.b0, cb.b1, M.cabinet),
+    slab(cb.a0 + 0.07, cb.a1, 0, d.hingeY, cb.b0 + 0.01, cb.b1 - 0.01, mat('#1b222c', { roughness: 0.8 })),
+    slab(cb.a0, cb.a1, d.hingeY, cb.top, cb.b0, cb.b0 + 0.02, M.steelDark),
+    slab(cb.a0, cb.a1, d.hingeY, cb.top, cb.b1 - 0.02, cb.b1, M.steelDark),
+    slab(cb.a1 - 0.03, cb.a1, d.hingeY, cb.top, cb.b0, cb.b1, M.steelDark),
+    slab(cb.a0, cb.a1, cavityTop, cb.top, cb.b0, cb.b1, M.steelDark),
   )
-  // Stainless tub inside.
   const tub = mat('#b9c1cb', { metalness: 0.85, roughness: 0.3, side: THREE.BackSide })
-  const tubBox = new THREE.Mesh(new THREE.BoxGeometry(cb.a1 - cb.a0 - 0.05, d.height - 0.02, cb.b1 - cb.b0 - 0.06), tub)
+  const tubBox = new THREE.Mesh(new THREE.BoxGeometry(cb.a1 - cb.a0 - 0.05, d.height - 0.02, cb.b1 - cb.b0 - 0.05), tub)
   tubBox.position.set((cb.a0 + cb.a1) / 2 + 0.01, d.hingeY + d.height / 2, 0)
   g.add(tubBox)
-  // Control panel above the door: start button and a status light.
-  const panel = slab(cb.a0 - 0.006, cb.a0, cavityTop + 0.01, cb.top - 0.04, cb.b0 + 0.04, cb.b1 - 0.04, M.black)
-  const btn = new THREE.Mesh(new THREE.CylinderGeometry(0.014, 0.014, 0.012, 20), mat('#e5e7eb'))
-  btn.rotation.z = Math.PI / 2
-  btn.position.set(cb.a0 - 0.008, K.button.y, K.button.b)
-  const led = new THREE.MeshStandardMaterial({ color: '#334155', emissive: '#000000' })
-  const ledM = new THREE.Mesh(new THREE.SphereGeometry(0.006, 12, 8), led)
-  ledM.position.set(cb.a0 - 0.007, K.button.y, K.button.b - 0.05)
-  g.add(panel, btn, ledM)
 
   // Door: pivots at the bottom front edge, rotation about z (0 closed, pi/2 flat open).
   const door = new THREE.Group()
@@ -539,6 +522,15 @@ function buildKitchen(g: THREE.Group, pick: THREE.Object3D[]): KitchenParts {
   bar.position.set(K.handle.u, K.handle.s, 0)
   for (const z of [-d.width * 0.33, d.width * 0.33]) door.add(slab(-0.045, -d.thick / 2, K.handle.s - 0.006, K.handle.s + 0.006, z - 0.006, z + 0.006, M.black))
   door.add(outer, inner, shadowed(bar))
+  // Controls on the front, top right: a start button and a status light (they open with the door).
+  const btn = new THREE.Mesh(new THREE.CylinderGeometry(0.012, 0.012, 0.01, 20), mat('#e5e7eb'))
+  btn.rotation.z = Math.PI / 2
+  btn.position.set(-d.thick / 2 - 0.004, K.button.y - d.hingeY, K.button.b)
+  const strip = slab(-d.thick / 2 - 0.003, -d.thick / 2, K.button.y - d.hingeY - 0.02, K.button.y - d.hingeY + 0.02, K.button.b - 0.09, K.button.b + 0.03, M.black)
+  const led = new THREE.MeshStandardMaterial({ color: '#334155', emissive: '#000000' })
+  const ledM = new THREE.Mesh(new THREE.SphereGeometry(0.005, 12, 8), led)
+  ledM.position.set(-d.thick / 2 - 0.004, K.button.y - d.hingeY, K.button.b - 0.05)
+  door.add(strip, btn, ledM)
   g.add(door)
 
   // Wire racks; plates stand between tines in the lower one, cups sit in the upper one.
@@ -607,7 +599,7 @@ function buildKitchen(g: THREE.Group, pick: THREE.Object3D[]): KitchenParts {
     g.add(peg)
   }
   // A drying mat for the cups.
-  g.add(slab(0.4, 0.54, K.counterH, K.counterH + 0.004, 0.31, 0.55, mat('#64748b', { roughness: 0.9 })))
+  g.add(slab(0.4, 0.54, K.counterH, K.counterH + 0.004, -0.98, -0.74, mat('#64748b', { roughness: 0.9 })))
   return { door, racks, led }
 }
 

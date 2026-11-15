@@ -117,15 +117,17 @@ function staticBoxes(): Box[] {
   // Kitchen: counters, the cabinet around the dishwasher cavity, the plate drying rack.
   const K = KITCHEN
   for (const c of K.counters) out.push(slabW('kitchen', c.a0, c.a1, 0, K.counterH, c.b0, c.b1))
+  // The dishwasher under the worktop: plinth, sides, back, top, and the worktop over it.
   const cb = K.cabinet
   const d = K.door
   const top = d.hingeY + d.height
   out.push(
-    slabW('kitchen', cb.a0, cb.a1, 0, d.hingeY, cb.b0, cb.b1),
+    slabW('kitchen', cb.a0 + 0.04, cb.a1, 0, d.hingeY, cb.b0, cb.b1),
     slabW('kitchen', cb.a0, cb.a1, top, cb.top, cb.b0, cb.b1),
-    slabW('kitchen', cb.a0, cb.a1, d.hingeY, top, cb.b0, cb.b0 + 0.03),
-    slabW('kitchen', cb.a0, cb.a1, d.hingeY, top, cb.b1 - 0.03, cb.b1),
+    slabW('kitchen', cb.a0, cb.a1, d.hingeY, top, cb.b0, cb.b0 + 0.02),
+    slabW('kitchen', cb.a0, cb.a1, d.hingeY, top, cb.b1 - 0.02, cb.b1),
     slabW('kitchen', cb.a1 - 0.03, cb.a1, d.hingeY, top, cb.b0, cb.b1),
+    slabW('kitchen', K.counters[0].a0, K.counters[0].a1, K.counterH - 0.03, K.counterH, cb.b0, cb.b1),
   )
   const pr = K.plateRack
   out.push(slabW('kitchen', pr.a - 0.07, pr.a + 0.07, K.counterH, K.counterH + 0.012, pr.b0, pr.b1))
