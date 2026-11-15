@@ -32,7 +32,7 @@ import { Button, Card, Segmented, Slider, Stat } from './ui'
 import { DOCKS, ITEMS, KITCHEN, LAUNDRY, STAGING, doorAngleFor, foldAngleFor, furnitureRects, lidAngleFor, toLocal, toWorld, type StationId } from '../lib/stations'
 import { handPath, keepOutsAll, keepOutsFor, pathSteps, toRobotGoal, waistForMove, type HandGoal } from '../lib/motion'
 import { TASKS, planTask, type Act, type Mechanism, type PlanCtx, type TaskId } from '../lib/tasks'
-import { buildClutter, type Clutter } from './clutter'
+import { ballOf, buildClutter, type Clutter } from './clutter'
 import { FloorGrid, planPath, pathLength, type Disc, type Pt } from '../lib/pathPlan'
 import { buildStations, type Mech, type Stations } from './stationProps'
 import type { Physics, PhysicsStats } from './physicsWorld'
@@ -1083,6 +1083,8 @@ export default function Humanoid() {
     if (import.meta.env.DEV) Object.assign(window, { __world: w, __cloth: cloth })
     /** Items let go of, to check where they ended up once they settle. */
     let landing: { id: string; where: string; at: number; container: string; pos: [number, number, number] }[] = []
+    /** Towels (cloth) each hand has pinched. */
+    const clothHeld: Partial<Record<Side, string>> = {}
     /** Dishes put in a rack this task, with the slot they were meant for, to check again at the end. */
     let racked: { id: string; container: string; pos: [number, number, number] }[] = []
 
@@ -1243,7 +1245,7 @@ export default function Humanoid() {
       },
       shape: (id) => clutterOf(id)?.shape ?? null,
       kindOf: (id) => clutterOf(id)?.kind ?? null,
-      held: () => (phys ? { ...phys.stats().held } : {}),
+      held: () => ({ ...(phys ? phys.stats().held : {}), ...clothHeld }),
       robot: () => ({ x: sim.x, z: sim.z, yaw: sim.yaw }),
       free: (x, z, yaw) => !blockedAt(x, z, yaw),
       workClear: (x, z, yaw) => armsClearAt(x, z, yaw),
@@ -1276,6 +1278,13 @@ export default function Humanoid() {
         if (except.includes(pr.id)) continue
         const where = S.where.get(pr.id) ?? 'floor'
         if (where !== 'floor') continue
+        const tw = w.clutter.towels.get(pr.id)
+        if (tw) {
+          // A towel covers a patch of floor round its middle.
+          const c = tw.centroid()
+          out.push({ x: c.x, z: c.z, r: Math.max(0.1, tw.spread() * 0.85) })
+          continue
+        }
         const p = phys.state(pr.id).pos
         if (p.y > 0.25) continue
         const sh = pr.shape
@@ -1474,6 +1483,8 @@ export default function Humanoid() {
         if (sim.task) endTask(null)
         S.reset()
         for (const pr of w.clutter.props) S.where.delete(pr.id) // back on the floor
+        for (const tw of w.clutter.towels.values()) tw.reset()
+        for (const side of SIDES) delete clothHeld[side]
         phys?.reset()
         fillBasket()
         landing = []
@@ -1584,6 +1595,15 @@ export default function Humanoid() {
           sim.gripT[a.side] = a.g
           break
         case 'grab': {
+          const towel = w.clutter.towels.get(a.item)
+          if (towel) {
+            // Cloth: pinch whatever is under the fingertips.
+            if (towel.pinch(a.side, tcpWorld(a.side))) {
+              S.where.set(a.item, 'held')
+              clothHeld[a.side] = a.item
+            } else say('Missed the towel: no cloth between the fingers')
+            break
+          }
           if (phys) {
             // The grasp holds only if the item is really between the fingers.
             if (phys.grab(a.side, a.item)) S.where.set(a.item, 'held')
@@ -1597,6 +1617,16 @@ export default function Humanoid() {
           break
         }
         case 'release': {
+          const towel = w.clutter.towels.get(a.item)
+          if (towel) {
+            if (clothHeld[a.side] === a.item) {
+              towel.release(a.side)
+              delete clothHeld[a.side]
+              S.where.set(a.item, a.where)
+              landing.push({ id: a.item, where: a.where, at: sim.time + 2.5, container: a.container, pos: a.pos })
+            }
+            break
+          }
           if (phys) {
             // Let go: the item drops and lands wherever physics puts it.
             if (phys.release(a.side) === a.item) {
@@ -2043,6 +2073,14 @@ export default function Humanoid() {
       sim.anims = sim.anims.filter((an) => an.t < 1)
       S.apply(sim.time, dt)
       cloth.step(dt, { L: toLocal('laundry', tcpWorld('L')), R: toLocal('laundry', tcpWorld('R')) })
+      // The towels on the floor: cloth too. They meet the robot's base as a solid box.
+      w.clutter.cloth.step(
+        dt,
+        { L: tcpWorld('L'), R: tcpWorld('R') },
+        { x: sim.x, z: sim.z, yaw: sim.yaw, half: [0.31, 0.27], top: 0.32 },
+        w.clutter.props.filter((pr) => pr.kind !== 'towel' && (S.where.get(pr.id) ?? 'floor') === 'floor').map((pr) => ballOf(pr, pr.obj.position)),
+      )
+      for (const [id, tw] of w.clutter.towels) clutterOf(id)!.obj.position.copy(tw.grabPoint())
       if (phys) {
         try {
           phys.step(dt)
@@ -2060,7 +2098,7 @@ export default function Humanoid() {
         // Where did let-go items end up? One that fell off or bounced out goes back on the to-do list.
         for (const l of landing) {
           if (sim.time < l.at) continue
-          const p = phys.state(l.id).pos
+          const p = w.clutter.towels.get(l.id)?.centroid() ?? phys.state(l.id).pos
           if (l.where === 'bin' || l.where === 'hamper') {
             // Dropped into the bin or hamper: it lands low, but inside.
             const c = w.clutter[l.where]

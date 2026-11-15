@@ -373,6 +373,7 @@ export async function createPhysics(scene: THREE.Scene, stations: Stations, rig:
       world.createCollider(d.setTranslation(st.x, st.h / 2, st.z).setFriction(0.6).setCollisionGroups(G_STATIC), ground)
     }
     for (const pr of clutter.props) {
+      if (pr.kind === 'towel') continue // towels are cloth (floorCloth.ts), not rigid bodies
       pr.obj.updateWorldMatrix(true, false)
       const p = new THREE.Vector3()
       const q = new THREE.Quaternion()

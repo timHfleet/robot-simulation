@@ -1010,7 +1010,8 @@ function planCleanup(ctx: PlanCtx): Act[] {
     const tilt = upright ? 0 : rad(28)
     const approach = new THREE.Vector3(0, -Math.cos(tilt), 0).addScaledVector(f, Math.sin(tilt)).normalize()
     close.addScaledVector(approach, -close.dot(approach)).normalize()
-    const at = new THREE.Vector3(pos.x, shape.kind === 'cyl' ? pos.y : g.y, pos.z)
+    // Cans at their middle; a towel where it's highest near its middle (where fingers meet it).
+    const at = new THREE.Vector3(pos.x, shape.kind === 'cyl' || kind === 'towel' ? Math.max(pos.y, 0.012) : g.y, pos.z)
     const other: Side = side === 'L' ? 'R' : 'L'
     return [
       { k: 'move', arms: { [other]: carry(other) } },
@@ -1051,7 +1052,8 @@ function planCleanup(ctx: PlanCtx): Act[] {
       { k: 'lift', h: CARRY_LIFT },
       { k: 'goto', x: best.x, z: best.z, yaw: best.yaw, what: `the ${box}` },
     ]
-    const centre = new THREE.Vector3(c.x, c.h + 0.16, c.z)
+    // A towel hangs ~30 cm below the fingers: let go high enough that it clears the rim.
+    const centre = new THREE.Vector3(c.x, c.h + (box === 'hamper' ? 0.42 : 0.16), c.z)
     // Fingers leaning 30° toward the container: the wrist stays nearer the robot, well within reach.
     const f = new THREE.Vector3(Math.cos(best.yaw), 0, -Math.sin(best.yaw))
     const lean = DOWN.clone().multiplyScalar(Math.cos(rad(30))).addScaledVector(f, Math.sin(rad(30)))
@@ -1076,7 +1078,7 @@ function planCleanup(ctx: PlanCtx): Act[] {
     mugSlot++
     const o = rackOrigin('upper', K.racks.upper.travel)
     const slotLocal: [number, number, number] = [sl.a, K.cup.h / 2 + 0.004, sl.b]
-    const slot = W(o.x + sl.a, o.y + K.cup.h / 2 + 0.03, sl.b)
+    const slot = W(o.x + sl.a, o.y + K.cup.h / 2 + 0.015, sl.b) // let go just above the slot
     // Fingers forward and closing along `right`: the mug's axis (along the hand) turns vertical.
     return [
       { k: 'move', arms: { [side]: T(slot.clone().addScaledVector(fwd, -0.14).addScaledVector(UP, 0.06), fwd, right) } },

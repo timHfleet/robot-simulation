@@ -131,7 +131,7 @@ export const KITCHEN = {
    */
   plateChannel: { gap: 0.028, wallT: 0.005, wallH: 0.075, halfLen: 0.075, stopA: 0.07, stopH: 0.03 },
   /** Each cup stands inside four short posts (not on a peg: the cup is solid in physics). */
-  cupPosts: { r: 0.049, h: 0.04, t: 0.006 },
+  cupPosts: { r: 0.049, h: 0.06, t: 0.006 },
   cupSlots: [
     { a: 0.14, b: 0.08 },
     { a: 0.14, b: 0.17 },

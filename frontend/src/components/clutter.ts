@@ -9,7 +9,8 @@
  * hollow and fixed (and are furniture for the base's path and collision checks).
  */
 import * as THREE from 'three'
-import { DOCKS, KITCHEN, LAUNDRY, furnitureRects, stationQuat, toWorld } from '../lib/stations'
+import { DOCKS, FURNITURE, KITCHEN, LAUNDRY, furnitureRects, stationQuat, toWorld, type StationId } from '../lib/stations'
+import { createFloorCloth, type FloorCloth, type FloorTowel } from './floorCloth'
 import { towelTextures, wickerTextures } from './textures'
 
 export type PropShape =
@@ -45,6 +46,9 @@ export interface Clutter {
   statics: ClutterStatic[]
   bin: Container
   hamper: Container
+  /** The towels on the floor, as cloth (by prop id). */
+  cloth: FloorCloth
+  towels: Map<string, FloorTowel>
 }
 type Loose = Omit<ClutterProp, 'id' | 'kind'>
 
@@ -183,31 +187,19 @@ function mug(color: string): Loose {
   return { obj: shadowed(g), shape: { kind: 'cyl', r: 0.04, h: 0.09 }, density: 700, friction: 0.5 }
 }
 
+/**
+ * A towel dropped on the floor. It is real cloth (see floorCloth.ts): this returns only a
+ * marker, which follows the spot where a hand would grab the towel, and its material.
+ */
 function towel(r: () => number, color: string, band: string): Loose {
-  const { length, half } = LAUNDRY.towel
-  const w = 2 * half
-  const geo = new THREE.PlaneGeometry(w, length, 28, 20)
-  geo.rotateX(-Math.PI / 2)
-  // Scrunch it: a few soft ridges and lumps, flattened where it touches the floor.
-  const p = geo.attributes.position
-  const ridges = Array.from({ length: 4 }, () => ({ x: (r() - 0.5) * w, z: (r() - 0.5) * length, a: r() * Math.PI, h: 0.02 + r() * 0.04 }))
-  for (let i = 0; i < p.count; i++) {
-    const x = p.getX(i)
-    const z = p.getZ(i)
-    let y = 0.004
-    for (const k of ridges) {
-      const d = (x - k.x) * Math.cos(k.a) + (z - k.z) * Math.sin(k.a)
-      const along = (x - k.x) * -Math.sin(k.a) + (z - k.z) * Math.cos(k.a)
-      y += k.h * Math.exp(-(d * d) / 0.0015) * Math.exp(-(along * along) / 0.03)
-    }
-    // Pull the cloth in toward the lumps a little so it reads as bunched, not stretched.
-    p.setXYZ(i, x * 0.8 + (r() - 0.5) * 0.004, y, z * 0.85)
-  }
-  geo.computeVertexNormals()
   const tex = towelTextures(color, band)
-  const m = new THREE.Mesh(geo, mat('#ffffff', { map: tex.map, bumpMap: tex.bump, bumpScale: 1.5, roughness: 0.95, side: THREE.DoubleSide }))
-  // The collider is the bunched-up middle of the towel (so it fits through the hamper's opening).
-  return { obj: shadowed(m), shape: { kind: 'box', hx: 0.13, hy: 0.012, hz: 0.1, y: 0.012 }, density: 250, friction: 1.0 }
+  const marker = new THREE.Object3D()
+  marker.userData.towel = {
+    material: mat('#ffffff', { map: tex.map, bumpMap: tex.bump, bumpScale: 1.5, roughness: 0.95, side: THREE.DoubleSide }),
+    seed: Math.floor(r() * 1e9),
+  }
+  // The shape is only used for planning (how far it reaches); the cloth itself does the physics.
+  return { obj: marker, shape: { kind: 'box', hx: 0.16, hy: 0.012, hz: 0.12, y: 0.012 }, density: 250, friction: 1.0 }
 }
 
 /** A small takeaway carton (it has to fit in the bin). */
@@ -303,6 +295,13 @@ function hamper() {
   const p = toWorld('laundry', H.a, 0, H.b)
   g.position.copy(p)
   return { obj: shadowed(g), pos: p }
+}
+
+/** A loose piece as a sphere round where it is (for the cloth to drape over). */
+export function ballOf(pr: ClutterProp, at: THREE.Vector3) {
+  const sh = pr.shape
+  const r = sh.kind === 'ball' ? sh.r : sh.kind === 'cyl' ? Math.max(sh.r, sh.h / 2) + 0.01 : Math.max(sh.hx, sh.hz) * 0.8
+  return { x: at.x, y: at.y, z: at.z, r }
 }
 
 export function buildClutter(scene: THREE.Scene, obstacles: { x: number; z: number; r: number }[]): Clutter {
@@ -410,10 +409,47 @@ export function buildClutter(scene: THREE.Scene, obstacles: { x: number; z: numb
     place(pr, x, z, r() * Math.PI * 2, lying)
     placed++
   }
+  // The towels as cloth: they drape on the floor and collide with the furniture, the bin and
+  // the hamper (which have their own round walls, so their square furniture boxes are left out).
+  const boxes = (Object.keys(FURNITURE) as StationId[]).flatMap((st) =>
+    FURNITURE[st]
+      .filter((b) => !(st === 'kitchen' && b.y1 === T.h) && !(st === 'laundry' && b.y1 === H.h))
+      .map((b) => {
+        const p = toWorld(st, b.a0, 0, b.b0)
+        const q = toWorld(st, b.a1, 0, b.b1)
+        return { x0: Math.min(p.x, q.x), x1: Math.max(p.x, q.x), z0: Math.min(p.z, q.z), z1: Math.max(p.z, q.z), y0: b.y0, y1: b.y1 }
+      }),
+  )
+  const towelProps = props.filter((pr) => pr.kind === 'towel')
+  const { length, half } = LAUNDRY.towel
+  const cloth = createFloorCloth(
+    towelProps.map((pr) => ({
+      x: pr.obj.position.x,
+      z: pr.obj.position.z,
+      yaw: new THREE.Euler().setFromQuaternion(pr.obj.quaternion, 'YXZ').y,
+      material: pr.obj.userData.towel.material,
+      seed: pr.obj.userData.towel.seed,
+    })),
+    { w: 2 * half, l: length, nu: 19, nv: 13 },
+    boxes,
+    [
+      { x: bin.pos.x, z: bin.pos.z, r: T.r, h: T.h, floor: 0.045 },
+      { x: hp.pos.x, z: hp.pos.z, r: H.r, h: H.h, floor: 0.02 },
+    ],
+    props.filter((pr) => pr.kind !== 'towel').map((pr) => ballOf(pr, pr.obj.position)),
+  )
+  const towels = new Map<string, FloorTowel>()
+  towelProps.forEach((pr, i) => {
+    towels.set(pr.id, cloth.towels[i])
+    scene.add(cloth.towels[i].mesh)
+    pr.obj.position.copy(cloth.towels[i].grabPoint())
+  })
   return {
     props,
     statics,
     bin: { x: bin.pos.x, z: bin.pos.z, r: T.r, h: T.h },
     hamper: { x: hp.pos.x, z: hp.pos.z, r: H.r, h: H.h },
+    cloth,
+    towels,
   }
 }
