@@ -647,29 +647,52 @@ function planFold(ctx: PlanCtx, towelsLeft: number): Act[] {
     { k: 'clothFolded' },
     { k: 'say', text: 'Towel folded' },
     {
-      // Carry the folded towel to the stack: the right hand presses into its middle, holds it
-      // all, lifts it and sets it down on the pile.
+      // Carry the folded towel to the stack with both hands, one at each end (through all its
+      // layers), and lay it down gently on top of the pile before letting go.
       k: 'plan',
       make: () => {
-        const c = ctx.cloth('centre')
-        c.y = ctx.cloth('top').y - 0.004
+        const c = L(ctx.cloth('centre'))
+        const top = ctx.cloth('top').y
+        // The folded towel's ends are its left and right edges on the table (along b).
+        const half = 0.065
+        const grip = (d: number) => W(c.x, top - 0.004, c.z + d)
         const S = LAUNDRY.stack
-        const over = W(S.a, T0 + 0.16, S.b)
-        return [
-          { k: 'say', text: 'Putting it on the stack' },
+        const lift = 0.06
+        const list: Act[] = [
+          { k: 'say', text: 'Both hands take it by the ends and carry it to the stack' },
+          { k: 'grip', side: 'L', g: 0.5 },
           { k: 'grip', side: 'R', g: 0.5 },
-          { k: 'move', arms: { R: at('R', up(c, 0.08)) } },
-          { k: 'move', arms: { R: at('R', c) }, slow: true },
+          { k: 'move', arms: { L: at('L', up(grip(-half), 0.07)), R: at('R', up(grip(half), 0.07)) } },
+          { k: 'move', arms: { L: at('L', grip(-half)), R: at('R', grip(half)) }, slow: true },
+          { k: 'grip', side: 'L', g: 0 },
           { k: 'grip', side: 'R', g: 0 },
-          { k: 'clothGrab', side: 'R', feature: 'all' },
-          { k: 'move', arms: { R: at('R', up(c, 0.12)) }, slow: true },
-          { k: 'move', arms: { R: at('R', over) }, slow: true },
-          { k: 'move', arms: { R: at('R', W(S.a, T0 + 0.07, S.b)) }, slow: true },
-          { k: 'towelStack' },
-          { k: 'grip', side: 'R', g: 0.5 },
-          { k: 'move', arms: { R: at('R', over) } },
-          tuckHands(),
+          // Each hand holds a wide band of every layer at its end, so the towel stays folded.
+          { k: 'clothGrab', side: 'L', feature: 'nearest', radius: 0.07 },
+          { k: 'clothGrab', side: 'R', feature: 'nearest', radius: 0.07 },
+          { k: 'move', arms: { L: at('L', up(grip(-half), lift)), R: at('R', up(grip(half), lift)) }, slow: true },
+          {
+            k: 'plan',
+            make: () => {
+              const pile = ctx.cloth('stack').y
+              const P = (d: number, h: number) => W(S.a, h, S.b + d)
+              return [
+                { k: 'move', arms: { L: at('L', P(-half, pile + lift)), R: at('R', P(half, pile + lift)) }, slow: true },
+                // Down gently until it rests on the pile, then let go and lift the hands clear.
+                { k: 'move', arms: { L: at('L', P(-half, pile + 0.03)), R: at('R', P(half, pile + 0.03)) }, slow: true },
+                { k: 'move', arms: { L: at('L', P(-half, pile + 0.018)), R: at('R', P(half, pile + 0.018)) }, slow: true },
+                { k: 'grip', side: 'L', g: 0.5 },
+                { k: 'grip', side: 'R', g: 0.5 },
+                { k: 'clothRelease', side: 'L' },
+                { k: 'clothRelease', side: 'R' },
+                { k: 'move', arms: { L: at('L', P(-half, pile + 0.1)), R: at('R', P(half, pile + 0.1)) }, slow: true },
+                { k: 'wait', t: 1 },
+                { k: 'towelStack' },
+                tuckHands(),
+              ]
+            },
+          },
         ]
+        return list
       },
     },
   ]

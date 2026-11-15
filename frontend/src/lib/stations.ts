@@ -151,7 +151,7 @@ export const LAUNDRY = {
   /** Wicker basket of towels on the left of the table (station-local footprint, wall, height). */
   basket: { a0: 0.4, a1: 0.7, b0: -0.6, b1: -0.3, wall: 0.012, h: 0.11 },
   /** Where folded towels are stacked, on the right of the table. */
-  stack: { a: 0.52, b: 0.47 },
+  stack: { a: 0.52, b: 0.38 },
   /** Folds in order: left side, right side, then bottom half up. */
   folds: [
     { point: [0, 0.746, -0.08], n: [0, 0, -1], pinch: [0.55, -0.26] },

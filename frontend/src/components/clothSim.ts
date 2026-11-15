@@ -89,7 +89,7 @@ export interface Cloth {
   /** Let go. */
   release(side: 'L' | 'R'): void
   /** Pinch whatever cloth is nearest the fingertips (within reach), through every layer there. */
-  grabAt(side: 'L' | 'R', tcp: THREE.Vector3): number
+  grabAt(side: 'L' | 'R', tcp: THREE.Vector3, radius?: number): number
   /**
    * Smoothing: while on, the hand's fingertips press on the cloth and slide it along with
    * the hand (cloth further away is held by the table), which pulls out wrinkles.
@@ -108,6 +108,14 @@ export interface Cloth {
   grabFeature(side: 'L' | 'R', name: Feature, tcp: THREE.Vector3, stack?: boolean, radius?: number): number
   /** Is the cloth at rest (nothing held, nothing moving)? */
   sleeping(): boolean
+  /**
+   * Still towels (folded ones on the stack) the cloth can land on: their mesh vertices are
+   * added to a height map over the table. clearStatic() empties it.
+   */
+  addStatic(verts: Float32Array): void
+  clearStatic(): void
+  /** Height (station-local y) of the still towels at a table point, or the table top. */
+  staticHeight(x: number, z: number): number
   /** Raise the floor of the basket (towels lying under this one) and the drop height of new heaps. */
   setBasketLift(dy: number): void
   /** Move the whole cloth up by dy (station-local metres). */
@@ -315,11 +323,24 @@ export function createCloth(parts: ClothParts): Cloth {
   const BK = LAUNDRY.basket
   const BK_RIM = t.h + BK.h
   let basketFloor = t.h + 0.01 + REST_UP
+  // Height map of still towels on the table: 1 cm cells, the top of the cloth in each.
+  const HM_CELL = 0.01
+  const HM_NA = Math.ceil((t.a1 - t.a0) / HM_CELL)
+  const HM_NB = Math.ceil((t.b1 - t.b0) / HM_CELL)
+  const hm = new Float32Array(HM_NA * HM_NB)
+  let hmUsed = false
+  const hmAt = (x: number, z: number) => {
+    const i = Math.floor((x - t.a0) / HM_CELL)
+    const j = Math.floor((z - t.b0) / HM_CELL)
+    if (i < 0 || j < 0 || i >= HM_NA || j >= HM_NB) return 0
+    return hm[i * HM_NB + j]
+  }
   const collideTable = (k: number) => {
     let x = pos[k * 3]
     let z = pos[k * 3 + 2]
     const onTable = x > t.a0 && x < t.a1 && z > t.b0 && z < t.b1
     let lim = onTable ? floorY : 0.003
+    if (hmUsed && onTable) lim = Math.max(lim, hmAt(x, z) + MIN_DIST)
     // The basket: a floor (raised by the towels under this one) and four walls up to its rim.
     if (x > BK.a0 && x < BK.a1 && z > BK.b0 && z < BK.b1 && pos[k * 3 + 1] < BK_RIM) {
       const ix0 = BK.a0 + BK.wall
@@ -653,7 +674,7 @@ export function createCloth(parts: ClothParts): Cloth {
       if (import.meta.env.DEV) console.debug(`[cloth] ${side} pinch at ${tcp.toArray().map((v) => v.toFixed(3))}: ${pins[side].length} particles`)
       return pins[side].length
     },
-    grabAt: (side, tcp) => {
+    grabAt: (side, tcp, radius = STACK_R) => {
       for (const p of pins[side]) inv[p.k] = 1
       pins[side] = []
       let k0 = -1
@@ -669,7 +690,7 @@ export function createCloth(parts: ClothParts): Cloth {
       if (k0 < 0) return 0
       for (let k = 0; k < N; k++) {
         if (!active[k]) continue
-        if (Math.hypot(pos[k * 3] - pos[k0 * 3], pos[k * 3 + 2] - pos[k0 * 3 + 2]) < STACK_R && Math.abs(pos[k * 3 + 1] - pos[k0 * 3 + 1]) < 0.04)
+        if (Math.hypot(pos[k * 3] - pos[k0 * 3], pos[k * 3 + 2] - pos[k0 * 3 + 2]) < radius && Math.abs(pos[k * 3 + 1] - pos[k0 * 3 + 1]) < 0.04)
           pins[side].push({ k, off: [pos[k * 3] - tcp.x, pos[k * 3 + 1] - tcp.y, pos[k * 3 + 2] - tcp.z] })
       }
       for (const p of pins[side]) inv[p.k] = 0
@@ -725,6 +746,24 @@ export function createCloth(parts: ClothParts): Cloth {
       return pins[side].length
     },
     tune: TUNE,
+    addStatic: (v) => {
+      // Each vertex raises its cell and the ones around it (the cloth has thickness).
+      for (let k = 0; k < v.length; k += 3) {
+        const i0 = Math.floor((v[k] - t.a0) / HM_CELL)
+        const j0 = Math.floor((v[k + 2] - t.b0) / HM_CELL)
+        for (let i = i0 - 1; i <= i0 + 1; i++)
+          for (let j = j0 - 1; j <= j0 + 1; j++) {
+            if (i < 0 || j < 0 || i >= HM_NA || j >= HM_NB) continue
+            hm[i * HM_NB + j] = Math.max(hm[i * HM_NB + j], v[k + 1])
+          }
+      }
+      hmUsed = true
+    },
+    clearStatic: () => {
+      hm.fill(0)
+      hmUsed = false
+    },
+    staticHeight: (x, z) => Math.max(t.h, hmAt(x, z)),
     setBasketLift: (dy) => {
       basketFloor = t.h + 0.01 + REST_UP + dy
     },

@@ -849,7 +849,7 @@ export default function Humanoid() {
     const clothMesh = w.stations.parts.cloth.mesh
     const laundryG = w.stations.groups.laundry
     const T0 = LAUNDRY.table.h
-    const tw = { left: 0, basket: [] as THREE.Mesh[], stack: [] as THREE.Mesh[], stackTop: T0, layer: 0.03 }
+    const tw = { left: 0, basket: [] as THREE.Mesh[], stack: [] as THREE.Mesh[], layer: 0.03 }
     const towelMesh = (verts: Float32Array, color: string) => {
       const g = clothMesh.geometry.clone()
       g.setAttribute('position', new THREE.BufferAttribute(verts, 3))
@@ -870,7 +870,7 @@ export default function Humanoid() {
       for (const m of [...tw.basket, ...tw.stack]) dropMesh(m)
       tw.basket = []
       tw.stack = []
-      tw.stackTop = T0
+      cloth.clearStatic()
       tw.left = TOWEL_COLORS.length
       // One heap in the bottom of the basket, copied (turned) for the towels under the top one.
       cloth.setBasketLift(0)
@@ -915,30 +915,12 @@ export default function Humanoid() {
     }
     /** The folded towel the hand holds goes onto the stack; the next towel in the basket becomes the cloth. */
     const stackTowel = () => {
+      // The towel has been let go over the stack and has settled there under physics: keep it
+      // exactly as it landed (a still copy the next towels can land on), and ready the next one.
       const v = cloth.snapshot()
-      let lo = Infinity
-      let hi = -Infinity
-      let cx = 0
-      let cz = 0
-      for (let k = 0; k < v.length; k += 3) {
-        lo = Math.min(lo, v[k + 1])
-        hi = Math.max(hi, v[k + 1])
-        cx += v[k]
-        cz += v[k + 2]
-      }
-      const n = v.length / 3
-      const S = LAUNDRY.stack
-      const dx = S.a - cx / n
-      const dz = S.b - cz / n
-      const dy = tw.stackTop + 0.001 - lo
-      for (let k = 0; k < v.length; k += 3) {
-        v[k] += dx
-        v[k + 1] += dy
-        v[k + 2] += dz
-      }
+      cloth.addStatic(v)
       const done = TOWEL_COLORS.length - tw.left
       tw.stack.push(towelMesh(v, TOWEL_COLORS[done]))
-      tw.stackTop += Math.min(0.05, Math.max(0.015, (hi - lo) * 0.8))
       tw.left--
       if (tw.left > 0) {
         const m = tw.basket.pop()
@@ -1056,7 +1038,14 @@ export default function Humanoid() {
       },
       ids: (kind) => ITEMS.filter((d) => d.kind === kind).map((d) => d.id),
       cloth: (f) => {
-        const p = f === 'top' ? cloth.top() : f === 'centre' ? cloth.centroid() : cloth.feature(f as Feature)
+        const p =
+          f === 'top'
+            ? cloth.top()
+            : f === 'centre'
+              ? cloth.centroid()
+              : f === 'stack'
+                ? new THREE.Vector3(LAUNDRY.stack.a, cloth.staticHeight(LAUNDRY.stack.a, LAUNDRY.stack.b), LAUNDRY.stack.b)
+                : cloth.feature(f as Feature)
         return toWorld('laundry', p.x, p.y, p.z)
       },
     })
@@ -1282,7 +1271,7 @@ export default function Humanoid() {
             a.feature === 'all'
               ? cloth.grabAll(a.side, tcp)
               : a.feature === 'nearest'
-                ? cloth.grabAt(a.side, tcp)
+                ? cloth.grabAt(a.side, tcp, a.radius)
                 : cloth.grabFeature(a.side, a.feature as Feature, tcp, a.stack, a.radius)
           if (!caught) say(`Missed the towel: the ${a.side === 'L' ? 'left' : 'right'} hand couldn't reach it`)
           break
