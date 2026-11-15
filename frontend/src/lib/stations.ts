@@ -90,9 +90,14 @@ export const SORT = {
 export const KITCHEN = {
   counterH: 0.86,
   counters: [
-    { a0: 0.38, a1: 0.98, b0: -0.8, b1: -0.28 },
-    { a0: 0.38, a1: 0.98, b0: 0.28, b1: 0.8 },
+    { a0: 0.38, a1: 0.98, b0: -1.5, b1: -0.28 },
+    { a0: 0.38, a1: 0.98, b0: 0.28, b1: 1.5 },
   ],
+  /** Back wall face (station a), and the wall cabinets hung on it over the counters. */
+  wallA: 0.98,
+  uppers: { a0: 0.66, y0: 1.42, y1: 2.12 },
+  /** Undermount sink in the right-hand run, and its faucet behind it. */
+  sink: { a0: 0.5, a1: 0.86, b0: 0.9, b1: 1.3, depth: 0.2 },
   /** Tall cabinet around the dishwasher. */
   cabinet: { a0: 0.62, a1: 1.12, b0: -0.28, b1: 0.28, top: 1.32 },
   door: { hingeA: 0.62, hingeY: 0.55, height: 0.6, width: 0.5, thick: 0.04 },

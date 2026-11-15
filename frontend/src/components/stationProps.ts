@@ -5,7 +5,8 @@
  */
 import * as THREE from 'three'
 import { RoundedBoxGeometry } from 'three/examples/jsm/geometries/RoundedBoxGeometry.js'
-import { knitBump, stoneTexture, towelTextures, wickerTextures, woodTexture } from './textures'
+import { RectAreaLightUniformsLib } from 'three/examples/jsm/lights/RectAreaLightUniformsLib.js'
+import { knitBump, paintTexture, stoneTexture, subwayTile, towelTextures, wickerTextures, woodTexture } from './textures'
 import {
   CLOTH_NU,
   CLOTH_NV,
@@ -84,7 +85,7 @@ const M = {
   wood: mat('#ffffff', { map: woodTexture([1, 1]), roughness: 0.55, metalness: 0 }),
   woodDark: mat('#ffffff', { map: woodTexture([1, 3], '#7a5434'), roughness: 0.7, metalness: 0 }),
   counter: mat('#ffffff', { map: stoneTexture([2, 1]), roughness: 0.28, metalness: 0 }),
-  cabinet: mat('#475569', { roughness: 0.55 }),
+  cabinet: mat('#2f3d50', { roughness: 0.5 }), // painted base cabinets (deep navy)
   steel: mat('#c8ced6', { metalness: 0.8, roughness: 0.3 }),
   steelDark: mat('#8b939e', { metalness: 0.8, roughness: 0.35 }),
   wire: mat('#d1d5db', { metalness: 0.6, roughness: 0.35 }),
@@ -234,6 +235,266 @@ function buildSort(g: THREE.Group, pick: THREE.Object3D[]) {
   for (const bin of SORT.bins) g.add(tub(bin.a, bin.b, t.h, SORT.binSize, SORT.binWall, COLORS[bin.color]))
 }
 
+// ---------------------------------------------------------------------------
+// Kitchen fittings: base cabinets, quartz worktop, sink, tiled wall, wall cabinets
+// ---------------------------------------------------------------------------
+const KM = {
+  upper: mat('#ecebe6', { roughness: 0.45 }), // painted wall cabinets (warm white)
+  kick: mat('#1b222c', { roughness: 0.8 }),
+  carcass: mat('#d8d4cb', { roughness: 0.7 }),
+  pull: mat('#c9cdd2', { metalness: 0.9, roughness: 0.28 }),
+  quartz: mat('#ffffff', { map: stoneTexture([3, 1]), roughness: 0.18, metalness: 0 }),
+  sink: mat('#7f8892', { metalness: 0.95, roughness: 0.38, side: THREE.BackSide }),
+  chrome: mat('#e5e7eb', { metalness: 1, roughness: 0.12 }),
+  led: new THREE.MeshStandardMaterial({ color: '#fff4dc', emissive: '#ffe7b8', emissiveIntensity: 1.6 }),
+  shelf: mat('#e4e1da', { roughness: 0.6 }),
+}
+
+/** A bar pull on two posts, standing off a front face that faces -a. */
+function barPull(a: number, y: number, b: number, len: number, vertical: boolean) {
+  const g = new THREE.Group()
+  const bar = new THREE.Mesh(new THREE.CylinderGeometry(0.0055, 0.0055, len, 12), KM.pull)
+  if (!vertical) bar.rotation.x = Math.PI / 2
+  bar.position.set(a - 0.03, y, b)
+  g.add(bar)
+  for (const s of [-1, 1]) {
+    const post = new THREE.Mesh(new THREE.CylinderGeometry(0.004, 0.004, 0.03, 8), KM.pull)
+    post.rotation.z = Math.PI / 2
+    const d = (len / 2 - 0.012) * s
+    post.position.set(a - 0.015, vertical ? y + d : y, vertical ? b : b + d)
+    g.add(post)
+  }
+  return shadowed(g)
+}
+
+/**
+ * A shaker front (door or drawer) on a cabinet face at `a`: a recessed centre panel inside
+ * a raised frame, with small reveals all round. Glass fronts get a pane instead of a panel.
+ */
+function shakerFront(a: number, y0: number, y1: number, b0: number, b1: number, m: THREE.Material, glass = false) {
+  const g = new THREE.Group()
+  const gap = 0.0015
+  y0 += gap
+  y1 -= gap
+  b0 += gap
+  b1 -= gap
+  const fw = Math.min(0.06, (y1 - y0) * 0.24, (b1 - b0) * 0.2) // frame width
+  const t = 0.02
+  g.add(
+    slab(a - t, a, y0, y1, b0, b0 + fw, m),
+    slab(a - t, a, y0, y1, b1 - fw, b1, m),
+    slab(a - t, a, y0, y0 + fw, b0 + fw, b1 - fw, m),
+    slab(a - t, a, y1 - fw, y1, b0 + fw, b1 - fw, m),
+  )
+  if (glass) {
+    const pane = slab(a - 0.012, a - 0.008, y0 + fw, y1 - fw, b0 + fw, b1 - fw, M.glass)
+    pane.castShadow = false
+    g.add(pane)
+  } else {
+    g.add(slab(a - 0.012, a, y0 + fw, y1 - fw, b0 + fw, b1 - fw, m))
+  }
+  return g
+}
+
+type Module = { b0: number; b1: number; kind: 'doors' | 'drawers' | 'drawerDoor' | 'sink' }
+
+function kitchenFittings(g: THREE.Group, pick: THREE.Object3D[]) {
+  const K = KITCHEN
+  const top = K.counterH
+  const tt = 0.03 // worktop thickness
+  const face = K.counters[0].a0 + 0.035 // cabinet fronts sit just behind the worktop overhang
+  const kickH = 0.1
+
+  // --- Base cabinets ---------------------------------------------------------------
+  const modules: Module[] = [
+    { b0: -1.5, b1: -0.9, kind: 'doors' },
+    { b0: -0.9, b1: -0.28, kind: 'drawers' },
+    { b0: 0.28, b1: 0.7, kind: 'drawerDoor' },
+    { b0: 0.7, b1: 1.5, kind: 'sink' },
+  ]
+  for (const c of K.counters) {
+    g.add(slab(face, c.a1, kickH, top - tt, c.b0, c.b1, M.cabinet)) // carcass, with finished (painted) end panels
+    g.add(slab(face + 0.07, c.a1, 0, kickH, c.b0 + 0.01, c.b1 - 0.01, KM.kick)) // recessed toe kick
+  }
+  for (const m of modules) {
+    const y0 = kickH
+    const y1 = top - tt - 0.004
+    const mid = (m.b0 + m.b1) / 2
+    if (m.kind === 'drawers') {
+      // Three drawers, deeper toward the floor.
+      const hs = [0.17, 0.23, y1 - y0 - 0.4]
+      let y = y1
+      for (const h of hs) {
+        g.add(shakerFront(face, y - h, y, m.b0, m.b1, M.cabinet))
+        g.add(barPull(face - 0.02, y - Math.min(0.06, h / 2), mid, 0.22, false))
+        y -= h
+      }
+    } else if (m.kind === 'drawerDoor') {
+      g.add(shakerFront(face, y1 - 0.17, y1, m.b0, m.b1, M.cabinet))
+      g.add(barPull(face - 0.02, y1 - 0.06, mid, 0.18, false))
+      g.add(shakerFront(face, y0, y1 - 0.17, m.b0, m.b1, M.cabinet))
+      g.add(barPull(face - 0.02, y1 - 0.17 - 0.1, m.b0 + 0.04, 0.13, true))
+    } else {
+      // A pair of doors (under the sink: a false drawer front on top, no pull).
+      const doorTop = m.kind === 'sink' ? y1 - 0.15 : y1
+      if (m.kind === 'sink') g.add(shakerFront(face, doorTop, y1, m.b0, m.b1, M.cabinet))
+      const pairs: [number, number, number][] = [
+        [m.b0, mid, mid - 0.04],
+        [mid, m.b1, mid + 0.04],
+      ]
+      for (const [b0, b1, hb] of pairs) {
+        g.add(shakerFront(face, y0, doorTop, b0, b1, M.cabinet))
+        g.add(barPull(face - 0.02, doorTop - 0.1, hb, 0.13, true))
+      }
+    }
+  }
+
+  // --- Quartz worktop, with an undermount sink cut out of the right-hand run ---------
+  const S = K.sink
+  const worktop = (a0: number, a1: number, b0: number, b1: number) => {
+    const w = slab(a0, a1, top - tt, top, b0, b1, KM.quartz) // square edges, so the pieces round the sink meet without seams
+    g.add(w)
+    pick.push(w)
+  }
+  const [cl, cr] = K.counters
+  worktop(cl.a0, cl.a1, cl.b0, cl.b1)
+  worktop(cr.a0, cr.a1, cr.b0, S.b0)
+  worktop(cr.a0, cr.a1, S.b1, cr.b1)
+  worktop(cr.a0, S.a0, S.b0, S.b1)
+  worktop(S.a1, cr.a1, S.b0, S.b1)
+  // Basin: a stainless box seen from inside, with a drain.
+  const basin = new THREE.Mesh(new THREE.BoxGeometry(S.a1 - S.a0, S.depth, S.b1 - S.b0), KM.sink)
+  basin.position.set((S.a0 + S.a1) / 2, top - S.depth / 2, (S.b0 + S.b1) / 2)
+  basin.receiveShadow = true
+  g.add(basin)
+  const drain = new THREE.Mesh(new THREE.CylinderGeometry(0.035, 0.035, 0.004, 24), KM.chrome)
+  drain.position.set((S.a0 + S.a1) / 2 + 0.04, top - S.depth + 0.003, (S.b0 + S.b1) / 2)
+  const hole = new THREE.Mesh(new THREE.CylinderGeometry(0.02, 0.02, 0.005, 20), M.black)
+  hole.position.copy(drain.position)
+  hole.position.y += 0.001
+  g.add(drain, hole)
+  // Gooseneck faucet and a lever, behind the sink.
+  const fb = (S.b0 + S.b1) / 2
+  const fa = S.a1 + 0.055
+  const faucet = new THREE.Group()
+  const fbase = new THREE.Mesh(new THREE.CylinderGeometry(0.026, 0.03, 0.03, 20), KM.chrome)
+  fbase.position.set(fa, top + 0.015, fb)
+  const riser = new THREE.Mesh(new THREE.CylinderGeometry(0.014, 0.014, 0.28, 16), KM.chrome)
+  riser.position.set(fa, top + 0.17, fb)
+  const neck = new THREE.Mesh(new THREE.TorusGeometry(0.075, 0.014, 12, 24, Math.PI), KM.chrome)
+  neck.position.set(fa - 0.075, top + 0.31, fb)
+  const spout = new THREE.Mesh(new THREE.CylinderGeometry(0.014, 0.012, 0.06, 16), KM.chrome)
+  spout.position.set(fa - 0.15, top + 0.28, fb)
+  const lever = new THREE.Mesh(new THREE.CylinderGeometry(0.006, 0.006, 0.09, 10), KM.chrome)
+  lever.rotation.z = Math.PI / 2.6
+  lever.position.set(fa + 0.005, top + 0.1, fb + 0.035)
+  faucet.add(fbase, riser, neck, spout, lever)
+  g.add(shadowed(faucet))
+
+  // --- Wall: painted, with subway tile between the worktop and the wall cabinets ----
+  const U = K.uppers
+  const wallTop = 2.45
+  const paint = (w: number, h: number) => mat('#ffffff', { map: paintTexture([w / 1.2, h / 1.2]), roughness: 0.92 })
+  const wallPiece = (a0: number, a1: number, b0: number, b1: number) => {
+    const m = slab(a0, a1, 0, wallTop, b0, b1, paint(b1 - b0, wallTop))
+    m.castShadow = false
+    g.add(m)
+  }
+  const cb = K.cabinet
+  wallPiece(K.wallA, K.wallA + 0.04, -1.75, cb.b0)
+  wallPiece(K.wallA, K.wallA + 0.04, cb.b1, 1.75)
+  wallPiece(cb.a1, cb.a1 + 0.04, cb.b0, cb.b1) // the dishwasher's tall unit is built into a niche
+  {
+    // The niche stops at the top of the wall cabinets: plain wall above, flush with the rest.
+    const m = slab(K.wallA, K.wallA + 0.04, U.y1, wallTop, cb.b0, cb.b1, paint(cb.b1 - cb.b0, wallTop - U.y1))
+    m.castShadow = false
+    g.add(m)
+  }
+  for (const [b0, b1] of [
+    [cl.b0, cl.b1],
+    [cr.b0, cr.b1],
+  ]) {
+    const w = b1 - b0
+    const h = U.y0 - top
+    const tile = new THREE.Mesh(new THREE.PlaneGeometry(w, h), mat('#ffffff', { map: subwayTile([w / 0.3, h / 0.15]), roughness: 0.22 }))
+    tile.rotation.y = -Math.PI / 2
+    tile.position.set(K.wallA - 0.002, top + h / 2, (b0 + b1) / 2)
+    tile.receiveShadow = true
+    g.add(tile)
+  }
+
+  // --- Wall cabinets ------------------------------------------------------------------
+  // Over each run, and a bridge cabinet over the dishwasher's tall unit.
+  const runs = [
+    { b0: cl.b0, b1: cl.b1, a1: K.wallA, y0: U.y0, glass: -1 },
+    { b0: cb.b0, b1: cb.b1, a1: cb.a1, y0: cb.top + 0.02, glass: -1 },
+    { b0: cr.b0, b1: cr.b1, a1: K.wallA, y0: U.y0, glass: 1 },
+  ]
+  for (const r of runs) {
+    const n = Math.max(2, Math.round((r.b1 - r.b0) / 0.4))
+    const w = (r.b1 - r.b0) / n
+    for (let i = 0; i < n; i++) {
+      const b0 = r.b0 + i * w
+      const b1 = b0 + w
+      const glass = i === r.glass
+      if (glass) {
+        // A glass-front cabinet: open box with two shelves, a stack of plates, bowls and glasses.
+        const t = 0.016
+        const fa0 = U.a0 + 0.02
+        g.add(
+          slab(fa0, r.a1, r.y0, r.y0 + t, b0, b1, KM.upper),
+          slab(fa0, r.a1, U.y1 - t, U.y1, b0, b1, KM.upper),
+          slab(fa0, r.a1, r.y0, U.y1, b0, b0 + t, KM.upper),
+          slab(fa0, r.a1, r.y0, U.y1, b1 - t, b1, KM.upper),
+          slab(r.a1 - t, r.a1, r.y0, U.y1, b0, b1, KM.carcass),
+        )
+        const shelfY = [r.y0 + 0.24, r.y0 + 0.47]
+        for (const y of shelfY) g.add(slab(fa0 + 0.02, r.a1 - t, y - 0.008, y, b0 + t, b1 - t, KM.shelf))
+        const ca = (fa0 + r.a1) / 2 + 0.01
+        const cbm = (b0 + b1) / 2
+        const plateM = mat('#f8fafc', { roughness: 0.15 })
+        for (let k = 0; k < 6; k++) {
+          const p = new THREE.Mesh(new THREE.CylinderGeometry(0.11, 0.085, 0.008, 28), plateM)
+          p.position.set(ca, r.y0 + t + 0.004 + k * 0.009, cbm)
+          g.add(shadowed(p))
+        }
+        const bowlM = mat('#9fb7c9', { roughness: 0.2, side: THREE.DoubleSide })
+        for (let k = 0; k < 2; k++) {
+          const bowl = new THREE.Mesh(new THREE.CylinderGeometry(0.07, 0.04, 0.06, 24, 1, true), bowlM)
+          bowl.position.set(ca, shelfY[0] + 0.03 + k * 0.035, cbm)
+          g.add(shadowed(bowl))
+        }
+        for (const db of [-0.06, 0.06]) {
+          const cup = new THREE.Mesh(new THREE.CylinderGeometry(0.032, 0.028, 0.11, 18, 1, true), M.glass)
+          cup.position.set(ca, shelfY[1] + 0.055, cbm + db)
+          g.add(cup)
+        }
+      } else {
+        g.add(slab(U.a0 + 0.02, r.a1, r.y0, U.y1, b0, b1, KM.upper))
+      }
+      g.add(shakerFront(U.a0 + 0.02, r.y0, U.y1, b0, b1, KM.upper, glass))
+      // Pull near the bottom, on the opening side.
+      const left = i < n / 2
+      g.add(barPull(U.a0, r.y0 + 0.11, left ? b1 - 0.04 : b0 + 0.04, 0.13, true))
+    }
+    // Light rail with a warm LED strip behind it, and crown moulding on top.
+    g.add(slab(U.a0 - 0.002, U.a0 + 0.014, r.y0 - 0.03, r.y0, r.b0, r.b1, KM.upper))
+    const strip = slab(U.a0 + 0.03, U.a0 + 0.045, r.y0 - 0.006, r.y0 - 0.002, r.b0 + 0.03, r.b1 - 0.03, KM.led)
+    strip.castShadow = false
+    g.add(strip)
+    g.add(slab(U.a0 - 0.012, r.a1, U.y1, U.y1 + 0.03, r.b0 - 0.012, r.b1 + 0.012, KM.upper))
+    g.add(slab(U.a0 - 0.028, r.a1, U.y1 + 0.03, U.y1 + 0.06, r.b0 - 0.028, r.b1 + 0.028, KM.upper))
+  }
+  // The under-cabinet strips really light the worktop (area lights cast no shadows, so they are cheap).
+  RectAreaLightUniformsLib.init()
+  for (const c of K.counters) {
+    const light = new THREE.RectAreaLight('#ffe9c4', 6, c.b1 - c.b0 - 0.08, 0.03)
+    light.position.set(U.a0 + 0.04, U.y0 - 0.008, (c.b0 + c.b1) / 2)
+    light.rotation.set(-Math.PI / 2, 0, Math.PI / 2)
+    g.add(light)
+  }
+}
+
 interface KitchenParts {
   door: THREE.Group
   racks: Record<RackId, THREE.Group>
@@ -241,12 +502,7 @@ interface KitchenParts {
 }
 function buildKitchen(g: THREE.Group, pick: THREE.Object3D[]): KitchenParts {
   const K = KITCHEN
-  for (const c of K.counters) {
-    const base = slab(c.a0 + 0.02, c.a1, 0, K.counterH - 0.03, c.b0, c.b1, M.cabinet)
-    const top = slab(c.a0, c.a1, K.counterH - 0.03, K.counterH, c.b0, c.b1, M.counter, 0.01)
-    g.add(base, top)
-    pick.push(top)
-  }
+  kitchenFittings(g, pick)
   // Tall cabinet with the dishwasher cavity.
   const cb = K.cabinet
   const d = K.door

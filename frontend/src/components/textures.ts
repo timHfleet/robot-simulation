@@ -363,3 +363,55 @@ export function shirtTextures(color = '#2f4a6d', trim = '#20344f') {
   for (const t of [map, alpha, bump]) t.wrapS = t.wrapT = THREE.ClampToEdgeWrapping
   return { map, alpha, bump }
 }
+
+/**
+ * Glazed white subway tile with grey grout, in a running bond. One repeat is 0.3 m wide
+ * and 0.15 m tall (two 150 x 75 mm tiles across, two rows), so set repeat from the wall size.
+ */
+export function subwayTile(repeat: [number, number] = [1, 1]) {
+  const t = once('subway', () => {
+    const { c, g } = canvas(512, 256)
+    const r = rng(23)
+    g.fillStyle = '#b9b6b0' // grout
+    g.fillRect(0, 0, 512, 256)
+    const gw = 5
+    for (let row = 0; row < 2; row++) {
+      const off = row % 2 ? 128 : 0
+      for (let k = -1; k < 3; k++) {
+        const x = k * 256 + off
+        const y = row * 128
+        const shade = 238 + Math.floor(r() * 12)
+        const grd = g.createLinearGradient(0, y, 0, y + 128)
+        grd.addColorStop(0, `rgb(${shade + 4},${shade + 4},${shade + 2})`)
+        grd.addColorStop(1, `rgb(${shade - 10},${shade - 10},${shade - 12})`)
+        g.fillStyle = grd
+        g.fillRect(x + gw / 2, y + gw / 2, 256 - gw, 128 - gw)
+        // A soft glaze highlight near the top edge of each tile.
+        g.fillStyle = 'rgba(255,255,255,0.35)'
+        g.fillRect(x + gw / 2 + 6, y + gw / 2 + 4, 256 - gw - 12, 6)
+      }
+    }
+    return tex(c, true)
+  })
+  t.repeat.set(...repeat)
+  t.needsUpdate = true
+  return t
+}
+
+/** Matte painted wall with a very faint roller texture. */
+export function paintTexture(repeat: [number, number] = [1, 1]) {
+  const t = once('paint', () => {
+    const { c, g } = canvas(256, 256)
+    const r = rng(5)
+    g.fillStyle = '#d9d4cb'
+    g.fillRect(0, 0, 256, 256)
+    for (let i = 0; i < 3000; i++) {
+      g.fillStyle = r() < 0.5 ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.05)'
+      g.fillRect(r() * 256, r() * 256, 1 + r() * 2, 1 + r() * 2)
+    }
+    return tex(c, true)
+  })
+  t.repeat.set(...repeat)
+  t.needsUpdate = true
+  return t
+}
