@@ -55,7 +55,8 @@ const TURN_ACCEL = 6
 const MAX_TURN = 1.6
 const SIDES: Side[] = ['L', 'R']
 /** Cameras view: the share of the panel's height the head camera takes (the wrist cameras share the rest). */
-const CAM_SPLIT = 0.55
+/** Cameras view rows, top to bottom: head camera, wrist cameras, base cameras. */
+const CAM_ROWS = [0.44, 0.31, 0.25]
 /** How quickly arm moves reach full speed along their path (fraction of full speed per second). */
 const PATH_ACCEL = 2.5
 
@@ -116,6 +117,51 @@ function blockedAt(x: number, z: number, yaw: number) {
 }
 
 type Seg = { kind: 'turn'; yaw: number } | { kind: 'line'; x: number; z: number; vmax: number }
+
+/**
+ * Base cameras: a wide-angle camera pod on each face of the base, tilted down at the floor.
+ * Position and facing are in the robot's frame (x forward, z to the robot's right).
+ */
+type BaseCamId = 'front' | 'rear' | 'left' | 'right'
+const BASE_CAMS: { id: BaseCamId; label: string; pos: V3; yaw: number }[] = [
+  { id: 'front', label: 'Front', pos: [BASE.len / 2 + 0.004, 0.27, 0], yaw: 0 },
+  { id: 'left', label: 'Left', pos: [0.12, 0.27, -(BASE.w / 2 + 0.004)], yaw: Math.PI / 2 },
+  { id: 'right', label: 'Right', pos: [0.12, 0.27, BASE.w / 2 + 0.004], yaw: -Math.PI / 2 },
+  { id: 'rear', label: 'Rear', pos: [-(BASE.len / 2 + 0.004), 0.27, 0], yaw: Math.PI },
+]
+/** How far the base cameras gauge, and the distances at which the base slows and warns. */
+const CLEAR = { max: 1.5, slow: 0.6, warn: 0.6, danger: 0.25 }
+type Clearance = Record<BaseCamId, number>
+const FAR: Clearance = { front: CLEAR.max, rear: CLEAR.max, left: CLEAR.max, right: CLEAR.max }
+
+/**
+ * What a base camera measures: how far the whole base could slide in that camera's direction
+ * (forward, back, or sideways) before it touched furniture, an obstacle or a wall.
+ */
+function clearanceAt(x: number, z: number, yaw: number, id: BaseCamId) {
+  const c = Math.cos(yaw)
+  const sn = Math.sin(yaw)
+  const [dx, dz] = id === 'front' ? [c, -sn] : id === 'rear' ? [-c, sn] : id === 'right' ? [sn, c] : [-sn, -c]
+  if (blockedAt(x, z, yaw)) return 0
+  let lo = 0
+  let hi = -1
+  for (let d = 0.03; d <= CLEAR.max + 1e-9; d += 0.03) {
+    if (blockedAt(x + dx * d, z + dz * d, yaw)) {
+      hi = d
+      break
+    }
+    lo = d
+  }
+  if (hi < 0) return CLEAR.max
+  for (let k = 0; k < 4; k++) {
+    const m = (lo + hi) / 2
+    if (blockedAt(x + dx * m, z + dz * m, yaw)) hi = m
+    else lo = m
+  }
+  return lo
+}
+/** Top speed allowed with `d` metres of room ahead: full speed when clear, easing to a crawl. */
+const speedForClearance = (d: number) => (d >= CLEAR.slow ? Infinity : Math.max(0.05, (d - 0.02) * 0.9))
 
 // ---------------------------------------------------------------------------
 // Poses (degrees, in ARM order: shoulder pitch, roll, twist, elbow, forearm twist, wrist pitch, wrist yaw)
@@ -505,7 +551,50 @@ function buildRobot() {
   }
   const arms = { L: buildArm('L', carriage), R: buildArm('R', carriage) }
   const head = buildHead(upper)
-  return { robot, waist, waistLed: waistMotor.ledMat, carriage, wheels, arms, head, brakeMats, stripMat }
+
+  // Base cameras: a dark pod with a wide lens and a status ring on each face of the base,
+  // looking out and down at the floor to gauge how close the nearest obstacle is.
+  const lensMat = new THREE.MeshStandardMaterial({ color: '#0b1220', metalness: 0.9, roughness: 0.08 })
+  const baseCams = BASE_CAMS.map((bc) => {
+    const pod = new THREE.Group()
+    pod.name = `baseCam_${bc.id}`
+    pod.position.set(...bc.pos)
+    pod.rotation.y = bc.yaw
+    const body = rbox(0.022, 0.034, 0.062, 0.008, MAT.black)
+    const lens = new THREE.Mesh(new THREE.CylinderGeometry(0.0105, 0.012, 0.01, 24), lensMat)
+    lens.rotation.z = Math.PI / 2
+    lens.position.x = 0.014
+    const ringMat = new THREE.MeshStandardMaterial({ color: '#cffafe', emissive: '#22d3ee', emissiveIntensity: 1.2 })
+    const ring = new THREE.Mesh(new THREE.TorusGeometry(0.0125, 0.0018, 8, 28), ringMat)
+    ring.rotation.y = Math.PI / 2
+    ring.position.x = 0.0125
+    const cam = new THREE.PerspectiveCamera(100, 16 / 10, 0.02, 6)
+    cam.position.x = 0.02
+    cam.rotation.order = 'YXZ'
+    cam.rotation.y = -Math.PI / 2 // look along the pod's +x
+    cam.rotation.x = -rad(28) // and down at the floor
+    pod.add(body, lens, ring, cam)
+    robot.add(pod)
+    return { id: bc.id, cam, ringMat }
+  })
+
+  // Proximity zones on the floor around the base, one per camera: hidden while the way is clear,
+  // amber when something is within 60 cm, red within 25 cm.
+  const zones = BASE_CAMS.map((bc) => {
+    const r0 = bc.id === 'front' || bc.id === 'rear' ? FOOT.front + 0.04 : FOOT.half + 0.04
+    const span = bc.id === 'front' || bc.id === 'rear' ? rad(64) : rad(80)
+    const m = new THREE.MeshBasicMaterial({ color: '#f59e0b', transparent: true, opacity: 0.35, depthWrite: false, side: THREE.DoubleSide })
+    const mesh = new THREE.Mesh(new THREE.RingGeometry(r0, r0 + CLEAR.warn, 40, 1, -span / 2, span), m)
+    // Ring angle 0 is local +x; the ring's +y becomes -z after laying it flat.
+    mesh.rotation.x = -Math.PI / 2
+    mesh.rotation.z = bc.yaw
+    mesh.position.y = 0.006
+    mesh.visible = false
+    mesh.renderOrder = 2
+    robot.add(mesh)
+    return { id: bc.id, mesh }
+  })
+  return { robot, waist, waistLed: waistMotor.ledMat, carriage, wheels, arms, head, brakeMats, stripMat, baseCams, zones }
 }
 
 interface World {
@@ -531,6 +620,8 @@ interface World {
   trail: THREE.Line
   brakeMats: THREE.MeshStandardMaterial[]
   stripMat: THREE.MeshStandardMaterial
+  baseCams: { id: BaseCamId; cam: THREE.PerspectiveCamera; ringMat: THREE.MeshStandardMaterial }[]
+  zones: { id: BaseCamId; mesh: THREE.Mesh }[]
 }
 
 function buildWorld(el: HTMLDivElement): World {
@@ -725,6 +816,7 @@ interface Telemetry {
   task: { id: TaskId; label: string; step: number; total: number; text: string } | null
   log: string[]
   physics: PhysicsStats | null
+  clear: Clearance
 }
 
 const KEYMAP: Record<string, string> = {
@@ -789,6 +881,7 @@ export default function Humanoid() {
     task: null,
     physics: null,
     log: [],
+    clear: FAR,
   })
   const set = <K extends keyof Settings>(k: K, v: Settings[K]) => setSettings((s) => ({ ...s, [k]: v }))
   const shownSide: Side = settings.armSel === 'both' ? 'R' : settings.armSel
@@ -978,6 +1071,8 @@ export default function Humanoid() {
       time: 0,
       path: [] as Seg[],
       blockedT: 0,
+      clear: { ...FAR } as Clearance,
+      clearT: 0,
       task: null as null | { id: TaskId; label: string; acts: Act[]; i: number; started: boolean; text: string },
       log: [] as string[],
       gripT: { ...st0.grip } as Record<Side, number>,
@@ -1501,9 +1596,28 @@ export default function Humanoid() {
       const waveQ = [...WAVE]
       waveQ[3] = WAVE[3] + 0.4 * Math.sin((t - sim.waveUntil) * 4)
 
+      // Base cameras gauge the room on every side (20 Hz).
+      sim.clearT += dt
+      if (sim.clearT >= 0.05) {
+        sim.clearT = 0
+        for (const bc of BASE_CAMS) sim.clear[bc.id] = clearanceAt(sim.x, sim.z, sim.yaw, bc.id)
+        for (const zn of w.zones) {
+          const d = sim.clear[zn.id]
+          zn.mesh.visible = d < CLEAR.warn
+          const m = zn.mesh.material as THREE.MeshBasicMaterial
+          m.color.set(d < CLEAR.danger ? '#ef4444' : '#f59e0b')
+          m.opacity = d < CLEAR.danger ? 0.5 : 0.3
+        }
+        for (const bc of w.baseCams) {
+          const d = sim.clear[bc.id]
+          bc.ringMat.emissive.set(d < CLEAR.danger ? '#ef4444' : d < CLEAR.warn ? '#f59e0b' : '#22d3ee')
+        }
+      }
+
       let state = 'Idle'
       let vT = 0
       let vPrev = sim.v
+      let slowed = false
       for (let step = 0; step < steps; step++) {
         const throttle = sim.task ? 0 : (k.has('fwd') ? 1 : 0) - (k.has('back') ? 1 : 0)
         const steer = sim.task ? 0 : (k.has('left') ? 1 : 0) - (k.has('right') ? 1 : 0)
@@ -1557,6 +1671,16 @@ export default function Humanoid() {
           }
           sim.lastInput = t
         }
+        // Ease off before contact: cap the speed by the room the base cameras see ahead.
+        if (vT !== 0) {
+          const room = vT > 0 ? sim.clear.front : sim.clear.rear
+          // Driving by hand, it stops 3 cm short; scripted docking may creep the last bit.
+          const cap = room < 0.03 && !sim.task ? 0 : speedForClearance(room)
+          if (Math.abs(vT) > cap) {
+            vT = Math.sign(vT) * cap
+            slowed = true
+          }
+        }
         vPrev = sim.v
         sim.v = approach(sim.v, vT, ACCEL * h)
         sim.wz = approach(sim.wz, wT, TURN_ACCEL * h)
@@ -1574,6 +1698,7 @@ export default function Humanoid() {
           sim.z = nz
           if (Math.abs(sim.v) > 0.02) sim.blockedFor = Math.max(0, sim.blockedFor - h)
         }
+        if (slowed && state !== 'Idle' && state !== 'Working') state = Math.abs(vT) < 1e-6 ? 'Stopped: obstacle' : 'Slowing: obstacle'
         if (sim.blockedFor > 0.05) state = 'Blocked'
         if (sim.goal && sim.blockedFor > 2) {
           sim.goal = null
@@ -1764,14 +1889,26 @@ export default function Humanoid() {
       w.sun.target.position.copy(pos)
       w.controls.update()
       if (st.view === 'cameras') {
-        // The robot's cameras: the head camera across the top, the two wrist cameras below.
+        // The robot's cameras: the head camera across the top, the two wrist cameras below it,
+        // and the four base cameras along the bottom.
         const r = w.renderer
         const size = r.getSize(insetSize)
-        const split = Math.round(size.y * CAM_SPLIT)
+        const headH = Math.round(size.y * CAM_ROWS[0])
+        const baseH = Math.round(size.y * CAM_ROWS[2])
+        const wristH = size.y - headH - baseH - 4
+        const halfW = Math.floor(size.x / 2) - 1
+        const quarter = (size.x - 6) / 4
         const views: [THREE.PerspectiveCamera, number, number, number, number][] = [
-          [w.head.cam, 0, size.y - split, size.x, split],
-          [w.arms.L.cam, 0, 0, Math.floor(size.x / 2) - 1, size.y - split - 2],
-          [w.arms.R.cam, Math.ceil(size.x / 2) + 1, 0, Math.floor(size.x / 2) - 1, size.y - split - 2],
+          [w.head.cam, 0, size.y - headH, size.x, headH],
+          [w.arms.L.cam, 0, baseH + 2, halfW, wristH],
+          [w.arms.R.cam, size.x - halfW, baseH + 2, halfW, wristH],
+          ...w.baseCams.map((bc, i): [THREE.PerspectiveCamera, number, number, number, number] => [
+            bc.cam,
+            Math.round(i * (quarter + 2)),
+            0,
+            Math.round(quarter),
+            baseH,
+          ]),
         ]
         r.setScissorTest(true)
         views.forEach(([cam, x, y, vw, vh], i) => {
@@ -1826,6 +1963,7 @@ export default function Humanoid() {
           task: T ? { id: T.id, label: T.label, step: Math.min(T.i + 1, T.acts.length), total: T.acts.length, text: T.text } : null,
           log: sim.log,
           physics: phys ? phys.stats() : physFailed ? { awake: -1, contacts: 0, held: {} } : null,
+          clear: { ...sim.clear },
         })
       }
       raf = requestAnimationFrame(loop)
@@ -1918,15 +2056,35 @@ export default function Humanoid() {
               </div>
               {settings.view === 'cameras' && (
                 <div className="pointer-events-none absolute inset-0 text-[11px] text-slate-200">
-                  <div className="absolute inset-x-0 top-0 border-b-2 border-slate-950" style={{ height: `${CAM_SPLIT * 100}%` }}>
+                  <div className="absolute inset-x-0 top-0 border-b-2 border-slate-950" style={{ height: `${CAM_ROWS[0] * 100}%` }}>
                     <span className="absolute right-2 top-2 rounded bg-slate-900/80 px-2 py-0.5">Head camera</span>
                   </div>
                   {(['L', 'R'] as Side[]).map((side, i) => (
-                    <div key={side} className={clsx('absolute bottom-0 w-1/2', i ? 'right-0' : 'left-0 border-r-2 border-slate-950')} style={{ top: `${CAM_SPLIT * 100}%` }}>
+                    <div
+                      key={side}
+                      className={clsx('absolute w-1/2 border-b-2 border-slate-950', i ? 'right-0' : 'left-0 border-r-2')}
+                      style={{ top: `${CAM_ROWS[0] * 100}%`, height: `${CAM_ROWS[1] * 100}%` }}
+                    >
                       <span className="absolute left-2 top-2 rounded bg-slate-900/80 px-2 py-0.5">{side === 'L' ? 'Left' : 'Right'} gripper camera</span>
                       <span className="absolute left-1/2 top-1/2 h-4 w-4 -translate-x-1/2 -translate-y-1/2 rounded-full ring-1 ring-cyan-300/80" />
                     </div>
                   ))}
+                  {BASE_CAMS.map((bc, i) => {
+                    const d = tele.clear[bc.id]
+                    const tone = d < CLEAR.danger ? 'bg-red-500/90 text-white' : d < CLEAR.warn ? 'bg-amber-400/90 text-slate-950' : 'bg-slate-900/80'
+                    return (
+                      <div
+                        key={bc.id}
+                        className={clsx('absolute bottom-0 w-1/4', i < 3 && 'border-r-2 border-slate-950')}
+                        style={{ left: `${i * 25}%`, height: `${CAM_ROWS[2] * 100}%` }}
+                      >
+                        <span className="absolute left-1.5 top-1.5 rounded bg-slate-900/80 px-1.5 py-0.5">{bc.label} base cam</span>
+                        <span className={clsx('absolute bottom-1.5 right-1.5 rounded px-1.5 py-0.5 font-mono', tone)}>
+                          {d >= CLEAR.max ? 'clear > 1.5 m' : `${Math.round(d * 100)} cm`}
+                        </span>
+                      </div>
+                    )
+                  })}
                 </div>
               )}
             </div>
@@ -2006,6 +2164,14 @@ export default function Humanoid() {
             <Stat label="Speed" value={`${fmt(tele.speed, 2)} m/s`} />
             <Stat label="Heading" value={`${Math.round(tele.heading)}°`} />
             <Stat label="Odometer" value={`${fmt(tele.odo, 2)} m`} />
+            <Stat
+              label="Nearest obstacle"
+              value={(() => {
+                const [id, d] = (Object.entries(tele.clear) as [BaseCamId, number][]).reduce((a, b) => (b[1] < a[1] ? b : a))
+                return d >= CLEAR.max ? 'Clear' : `${Math.round(d * 100)} cm ${id}`
+              })()}
+              tone={Math.min(...Object.values(tele.clear)) < CLEAR.danger ? 'bad' : undefined}
+            />
             <Stat label="Position x" value={`${fmt(tele.x, 2)} m`} />
             <Stat label="Position z" value={`${fmt(tele.z, 2)} m`} />
             <Stat label="Shoulder height" value={`${Math.round(tele.lift * 100)} cm`} />
