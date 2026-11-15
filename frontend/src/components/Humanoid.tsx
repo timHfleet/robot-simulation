@@ -1036,7 +1036,9 @@ export default function Humanoid() {
     w.stations.useClothPhysics()
     if (import.meta.env.DEV) Object.assign(window, { __world: w, __cloth: cloth })
     /** Items let go of, to check where they ended up once they settle. */
-    let landing: { id: string; where: string; at: number }[] = []
+    let landing: { id: string; where: string; at: number; container: string; pos: [number, number, number] }[] = []
+    /** Dishes put in a rack this task, with the slot they were meant for, to check again at the end. */
+    let racked: { id: string; container: string; pos: [number, number, number] }[] = []
 
     const sim = {
       x: 0,
@@ -1126,6 +1128,42 @@ export default function Humanoid() {
       if (!def) return id
       return def.kind === 'block' ? `${def.color} block` : def.kind === 'cup' ? 'mug' : def.kind
     }
+    /**
+     * Is a dish really where the task put it? Upright (plates on edge, mugs standing) and
+     * within 3 cm of its slot in the rack. Returns what went wrong, or null.
+     */
+    const rackProblem = (id: string, container: string, pos: [number, number, number]): string | null => {
+      const o = S.items.get(id)
+      const rack = S.containers[container]
+      if (!o || !rack) return null
+      o.updateMatrixWorld()
+      rack.updateMatrixWorld()
+      const local = o.getWorldPosition(new THREE.Vector3()).applyMatrix4(rack.matrixWorld.clone().invert())
+      const e = o.matrixWorld.elements
+      const kind = ITEMS.find((d) => d.id === id)?.kind
+      // Plates stand with their axis (local z) level; mugs with their axis (local y) vertical.
+      const tilt = kind === 'plate' ? Math.asin(Math.min(1, Math.abs(e[9]))) : Math.acos(Math.min(1, Math.abs(e[5])))
+      if (tilt > THREE.MathUtils.degToRad(25)) return `tipped over in the rack (${Math.round(THREE.MathUtils.radToDeg(tilt))}° off upright)`
+      const off = Math.hypot(local.x - pos[0], local.z - pos[2])
+      if (off > 0.03) return `landed ${Math.round(off * 100)} cm from its slot`
+      return null
+    }
+    /** At the end of a task, check every dish again: racks sliding in can still knock one over. */
+    const reportRack = () => {
+      if (!racked.length) return
+      const bad: string[] = []
+      for (const r of racked) {
+        if (S.where.get(r.id) === 'floor') continue
+        const why = rackProblem(r.id, r.container, r.pos)
+        if (why) {
+          S.where.set(r.id, 'misplaced')
+          bad.push(`${itemName(r.id)} ${why}`)
+        } else S.where.set(r.id, 'rack')
+      }
+      const ok = racked.filter((r) => S.where.get(r.id) === 'rack').length
+      say(bad.length ? `Loaded ${ok} of ${racked.length} upright. Check: ${bad.join('; ')}` : `All ${racked.length} dishes loaded upright in their slots`)
+      racked = []
+    }
     /** The towel's left or right end as it lies (its furthest point along b), at its middle depth. */
     const clothEdge = (sign: number) => {
       const P = cloth.particles()
@@ -1208,6 +1246,7 @@ export default function Humanoid() {
     taskRef.current = {
       start: (id) => {
         if (sim.task) return
+        racked = []
         w.scene.updateMatrixWorld(true)
         const acts = planTask(id, planCtx(), { towelsLeft: tw.left })
         const meta = TASKS.find((x) => x.id === id)!
@@ -1229,6 +1268,7 @@ export default function Humanoid() {
         phys?.reset()
         fillBasket()
         landing = []
+        racked = []
         say('Scene reset')
       },
     }
@@ -1341,7 +1381,8 @@ export default function Humanoid() {
             // Let go: the item drops and lands wherever physics puts it.
             if (phys.release(a.side) === a.item) {
               S.where.set(a.item, a.where)
-              landing.push({ id: a.item, where: a.where, at: sim.time + 1.5 })
+              landing.push({ id: a.item, where: a.where, at: sim.time + 1.5, container: a.container, pos: a.pos })
+              if (a.where === 'rack') racked.push({ id: a.item, container: a.container, pos: a.pos })
             }
             break
           }
@@ -1446,6 +1487,7 @@ export default function Humanoid() {
         const a = T.acts[T.i]
         if (!a) {
           endTask(null)
+          reportRack()
           return
         }
         if (!T.started) {
@@ -1798,6 +1840,12 @@ export default function Humanoid() {
           if (p.y < 0.2) {
             S.where.set(l.id, 'floor')
             say(`The ${itemName(l.id)} fell on the floor`)
+          } else if (l.where === 'rack') {
+            const why = rackProblem(l.id, l.container, l.pos)
+            if (why) {
+              S.where.set(l.id, 'misplaced')
+              say(`The ${itemName(l.id)} ${why}`)
+            }
           }
         }
         landing = landing.filter((l) => sim.time < l.at)

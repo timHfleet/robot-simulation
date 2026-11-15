@@ -285,11 +285,31 @@ export async function createPhysics(scene: THREE.Scene, stations: Stations, rig:
       box(slabL(0, r.depth, 0, r.wall, w - 0.006, w)),
     ]
     if (id === 'lower') {
-      for (const b of K.plateSlots)
-        for (const side of [-1, 1])
-          for (const a of [K.plateSlotA - 0.06, K.plateSlotA + 0.06]) shapes.push(box(slabL(a - 0.0025, a + 0.0025, 0, 0.06, b + side * 0.012 - 0.0025, b + side * 0.012 + 0.0025)))
+      // Solid walls, not thin posts: a plate let go a little off-true slides down into the
+      // channel instead of landing on a post top and toppling.
+      const c = K.plateChannel
+      const a0 = K.plateSlotA - c.halfLen
+      const a1 = K.plateSlotA + c.halfLen
+      for (const b of K.plateSlots) {
+        for (const side of [-1, 1]) {
+          const inner = b + (side * c.gap) / 2
+          const outer = inner + side * c.wallT
+          shapes.push(box(slabL(a0, a1, 0, c.wallH, Math.min(inner, outer), Math.max(inner, outer))))
+        }
+        for (const side of [-1, 1]) {
+          const a = K.plateSlotA + side * c.stopA
+          shapes.push(box(slabL(a - 0.003, a + 0.003, 0, c.stopH, b - c.gap / 2, b + c.gap / 2)))
+        }
+      }
     } else {
-      for (const s of K.cupSlots) shapes.push(box(slabL(s.a - 0.003, s.a + 0.003, 0, 0.03, s.b - 0.003, s.b + 0.003)))
+      const c = K.cupPosts
+      for (const s of K.cupSlots)
+        for (let k = 0; k < 4; k++) {
+          const t = Math.PI / 4 + (k * Math.PI) / 2
+          const a = s.a + c.r * Math.cos(t)
+          const b = s.b + c.r * Math.sin(t)
+          shapes.push(box(slabL(a - c.t / 2, a + c.t / 2, 0, c.h, b - c.t / 2, b + c.t / 2)))
+        }
     }
     follow(stations.parts.racks[id], shapes, G_MECH)
   }

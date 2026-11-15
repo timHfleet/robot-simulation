@@ -135,18 +135,21 @@ function blockCloseAxis(q: THREE.Quaternion, ref: THREE.Vector3) {
  * shoulder the more the hand tilts toward it (like a person reaching across a table).
  * `shift` is how far the robot stands behind its dock (negative = backed up).
  */
-function downish(st: StationId, side: Side, p: THREE.Vector3, maxTilt = 55, shift = 0) {
+function downish(st: StationId, side: Side, p: THREE.Vector3, maxTilt = 55, shift = 0, forwardOnly = false) {
   const l = toLocal(st, p)
   const h = new THREE.Vector3(l.x - shift, 0, l.z - (side === 'L' ? -0.265 : 0.265))
   const d = h.length()
+  // A plate held by its rim must stay in its own plane (a-y): a sideways lean would tilt it
+  // out of the narrow rack channel. Lean only forward/back then.
+  if (forwardOnly) h.z = 0
   const a = rad(maxTilt) * THREE.MathUtils.clamp((d - 0.36) / 0.24, 0, 1)
   const local = new THREE.Vector3(0, -Math.cos(a), 0).addScaledVector(h.normalize(), Math.sin(a))
   return dirWorld(st, local.x, local.y, local.z)
 }
 
 /** Pick up an item from above (hand leaning toward it if far) and lift it clear. */
-function pickFromAbove(st: StationId, side: Side, id: string, tcp: THREE.Vector3, close: THREE.Vector3 | undefined, width: number, clear = 0.12, lift = 0.15, maxTilt = 55): Act[] {
-  const at = (p: THREE.Vector3) => T(p, downish(st, side, p, maxTilt), close)
+function pickFromAbove(st: StationId, side: Side, id: string, tcp: THREE.Vector3, close: THREE.Vector3 | undefined, width: number, clear = 0.12, lift = 0.15, maxTilt = 55, forwardOnly = false): Act[] {
+  const at = (p: THREE.Vector3) => T(p, downish(st, side, p, maxTilt, 0, forwardOnly), close)
   return [
     { k: 'grip', side, g: Math.min(1, gripFor(width) + 0.35) },
     { k: 'move', arms: { [side]: at(up(tcp, clear)) } },
@@ -170,8 +173,9 @@ function placeFromAbove(
   maxTilt = 55,
   /** How high above its resting place the item is let go (it drops the rest of the way). */
   release = 0.012,
+  forwardOnly = false,
 ): Act[] {
-  const at = (p: THREE.Vector3) => T(p, downish(st, side, p, maxTilt), close)
+  const at = (p: THREE.Vector3) => T(p, downish(st, side, p, maxTilt, 0, forwardOnly), close)
   return [
     { k: 'move', arms: { [side]: at(up(tcp, clear)) } },
     { k: 'move', arms: { [side]: at(up(tcp, release)) }, slow: true },
@@ -290,8 +294,8 @@ function planDishes(ctx: PlanCtx): Act[] {
       const slotRim = up(W(o.x + slotLocal[0], o.y + slotLocal[1], slotLocal[2]), K.plate.r - 0.018)
       acts.push(
         { k: 'say', text: `Plate ${i + 1}: left hand pinches the rim` },
-        ...pickFromAbove(st, 'L', id, rim, right, K.plate.t, 0.1, 0.16, 30),
-        ...placeFromAbove(st, 'L', id, slotRim, right, 0.45, { container: 'kitchen.lower', pos: slotLocal, yaw: 0, where: 'rack' }, 0.14, 30),
+        ...pickFromAbove(st, 'L', id, rim, right, K.plate.t, 0.1, 0.16, 30, true),
+        ...placeFromAbove(st, 'L', id, slotRim, right, 0.45, { container: 'kitchen.lower', pos: slotLocal, yaw: 0, where: 'rack' }, 0.14, 30, 0.012, true),
       )
     })
     acts.push({ k: 'move', arms: { L: tuck('L') } }, ...moveRack('lower', out, 0))

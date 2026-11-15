@@ -308,17 +308,34 @@ function buildKitchen(g: THREE.Group, pick: THREE.Object3D[]): KitchenParts {
     rg.add(shadowed(h))
     rg.add(slab(-0.018, 0, r.wall, r.wall + 0.025, -0.01 + 0.05 - 0.08, -0.004 + 0.05 - 0.08, M.wire), slab(-0.018, 0, r.wall, r.wall + 0.025, 0.004 + 0.05 + 0.08, 0.01 + 0.05 + 0.08, M.wire))
     if (id === 'lower') {
-      for (const b of K.plateSlots) for (const side of [-1, 1]) for (const a of [K.plateSlotA - 0.06, K.plateSlotA + 0.06]) {
-        const tine = new THREE.Mesh(new THREE.CylinderGeometry(0.0025, 0.0025, 0.06, 6), M.wire)
-        tine.position.set(a, 0.03, b + side * 0.012)
-        rg.add(tine)
+      // Each plate channel: a row of tines along both sides with a top rail (the physics
+      // treats each side as a solid wall), and low stop bars front and back.
+      const c = K.plateChannel
+      const n = 6
+      for (const b of K.plateSlots) {
+        for (const side of [-1, 1]) {
+          const bb = b + side * (c.gap / 2 + c.wallT / 2)
+          for (let i = 0; i < n; i++) {
+            const tine = new THREE.Mesh(new THREE.CylinderGeometry(0.0022, 0.0022, c.wallH, 6), M.wire)
+            tine.position.set(K.plateSlotA - c.halfLen + (i * 2 * c.halfLen) / (n - 1), c.wallH / 2, bb)
+            rg.add(tine)
+          }
+          rg.add(slab(K.plateSlotA - c.halfLen, K.plateSlotA + c.halfLen, c.wallH - 0.004, c.wallH, bb - 0.002, bb + 0.002, M.wire))
+        }
+        for (const side of [-1, 1]) {
+          const a = K.plateSlotA + side * c.stopA
+          rg.add(slab(a - 0.002, a + 0.002, 0, c.stopH, b - c.gap / 2, b + c.gap / 2, M.wire))
+        }
       }
     } else {
-      for (const s of K.cupSlots) {
-        const peg = new THREE.Mesh(new THREE.CylinderGeometry(0.003, 0.003, 0.03, 6), M.wire)
-        peg.position.set(s.a, 0.015, s.b)
-        rg.add(peg)
-      }
+      const c = K.cupPosts
+      for (const s of K.cupSlots)
+        for (let k = 0; k < 4; k++) {
+          const t = Math.PI / 4 + (k * Math.PI) / 2
+          const post = new THREE.Mesh(new THREE.CylinderGeometry(0.003, 0.003, c.h, 6), M.wire)
+          post.position.set(s.a + c.r * Math.cos(t), c.h / 2, s.b + c.r * Math.sin(t))
+          rg.add(post)
+        }
     }
     g.add(rg)
     return rg
