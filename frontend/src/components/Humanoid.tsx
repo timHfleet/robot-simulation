@@ -890,6 +890,7 @@ export default function Humanoid() {
   })
   const settingsRef = useRef(settings)
   settingsRef.current = settings
+  const [infoTab, setInfoTab] = useState<'joints' | 'telemetry'>('joints')
   const [tele, setTele] = useState<Telemetry>({
     x: 0,
     z: 0,
@@ -2334,14 +2335,30 @@ export default function Humanoid() {
           </div>
         </Card>
 
+        {/* Joints and telemetry share one card, a tab each. */}
         <Card
-          title={`Joints · ${shownSide === 'R' ? 'right' : 'left'} arm`}
+          title={infoTab === 'joints' ? `Joints · ${shownSide === 'R' ? 'right' : 'left'} arm` : 'Telemetry'}
           right={
-            <span className="font-mono text-[11px] text-slate-400">
-              hand at ({fmt(arm.tcp[0] * 100, 0)}, {fmt(arm.tcp[1] * 100, 0)}, {fmt(arm.tcp[2] * 100, 0)}) cm
-            </span>
+            <div className="flex items-center gap-3">
+              {infoTab === 'joints' && (
+                <span className="hidden font-mono text-[11px] text-slate-400 sm:inline">
+                  hand at ({fmt(arm.tcp[0] * 100, 0)}, {fmt(arm.tcp[1] * 100, 0)}, {fmt(arm.tcp[2] * 100, 0)}) cm
+                </span>
+              )}
+              <Segmented
+                size="sm"
+                value={infoTab}
+                onChange={setInfoTab}
+                options={[
+                  { value: 'joints', label: 'Joints' },
+                  { value: 'telemetry', label: 'Telemetry' },
+                ]}
+              />
+            </div>
           }
         >
+          {infoTab === 'joints' ? (
+            <>
           <div className="overflow-x-auto">
             <table className="w-full min-w-[520px] text-sm">
               <thead>
@@ -2399,9 +2416,8 @@ export default function Humanoid() {
             its weight times its lever arm about that joint's axis. The LED on each actuator turns amber above half its rated torque and red
             near the limit. Each joint moves with a trapezoidal velocity profile: it accelerates, cruises at its top speed, then brakes to stop on target.
           </p>
-        </Card>
-
-        <Card title="Telemetry">
+            </>
+          ) : (
           <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
             <Stat label="State" value={tele.state} tone={stateTone} />
             <Stat label="Speed" value={`${fmt(tele.speed, 2)} m/s`} />
@@ -2424,6 +2440,7 @@ export default function Humanoid() {
             <Stat label="Items moving" value={tele.physics && tele.physics.awake >= 0 ? String(tele.physics.awake) : '–'} />
             <Stat label="Item contacts" value={tele.physics && tele.physics.awake >= 0 ? String(tele.physics.contacts) : '–'} />
           </div>
+          )}
         </Card>
       </div>
 

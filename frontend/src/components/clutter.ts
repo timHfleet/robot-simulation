@@ -395,7 +395,9 @@ export function buildClutter(scene: THREE.Scene, obstacles: { x: number; z: numb
     () => [coffeeCup(), true],
   ]
   let placed = 0
-  for (let tries = 0; placed < 34 && tries < 2000; tries++) {
+  // 10 pieces of rubbish in all: the 4 by the bin (3 missed shots and the takeaway box) and 6 about the room.
+  const SCATTERED = 6
+  for (let tries = 0; placed < SCATTERED && tries < 2000; tries++) {
     const x = -1.55 + r() * 4.2
     const z = (r() - 0.5) * 5.2
     if (!clear(x, z, 0.08)) continue
