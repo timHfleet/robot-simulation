@@ -883,6 +883,7 @@ export default function Humanoid() {
         hi = Math.max(hi, shape[i])
       }
       tw.layer = Math.max(0.02, (hi - lo) * 0.5)
+      const B = LAUNDRY.basket
       // Copies are turned about the heap's own middle, so they stay inside the basket.
       let ca = 0
       let cb = 0
@@ -903,6 +904,9 @@ export default function Humanoid() {
           v[k] = ca + x * c - z * sn
           v[k + 2] = cb + x * sn + z * c
           v[k + 1] += i * tw.layer
+          // Keep every copy inside the basket walls (turning a heap can swing part of it out).
+          v[k] = Math.min(B.a1 - B.wall - 0.006, Math.max(B.a0 + B.wall + 0.006, v[k]))
+          v[k + 2] = Math.min(B.b1 - B.wall - 0.006, Math.max(B.b0 + B.wall + 0.006, v[k + 2]))
         }
         // Bottom of the basket first; the last towel in this list sits just under the top one.
         tw.basket.push(towelMesh(v, TOWEL_COLORS[tw.left - 1 - i]))

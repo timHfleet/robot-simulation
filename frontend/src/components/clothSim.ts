@@ -288,7 +288,20 @@ export function createCloth(parts: ClothParts): Cloth {
     run(top, swing, 160)
     for (const p of pins.R) inv[p.k] = 1
     pins.R = []
-    for (let i = 0; i < 480; i++) substep({}, 1, STEP)
+    for (let i = 0; i < 300; i++) substep({}, 1, STEP)
+    // Anything that ended up hanging over the rim is tucked in, as you would, and settles again.
+    const m = BK.wall + 0.008
+    for (let k = 0; k < N; k++) {
+      if (!active[k]) continue
+      const x = Math.min(BK.a1 - m, Math.max(BK.a0 + m, pos[k * 3]))
+      const z = Math.min(BK.b1 - m, Math.max(BK.b0 + m, pos[k * 3 + 2]))
+      if (x !== pos[k * 3] || z !== pos[k * 3 + 2]) {
+        pos[k * 3] = prev[k * 3] = x
+        pos[k * 3 + 2] = prev[k * 3 + 2] = z
+        pos[k * 3 + 1] = prev[k * 3 + 1] = Math.max(pos[k * 3 + 1], basketFloor + 0.03)
+      }
+    }
+    for (let i = 0; i < 240; i++) substep({}, 1, STEP)
     asleep = true
   }
 
@@ -342,17 +355,18 @@ export function createCloth(parts: ClothParts): Cloth {
     let lim = onTable ? floorY : 0.003
     if (hmUsed && onTable) lim = Math.max(lim, hmAt(x, z) + MIN_DIST)
     // The basket: a floor (raised by the towels under this one) and four walls up to its rim.
-    if (x > BK.a0 && x < BK.a1 && z > BK.b0 && z < BK.b1 && pos[k * 3 + 1] < BK_RIM) {
+    if (x > BK.a0 && x < BK.a1 && z > BK.b0 && z < BK.b1 && pos[k * 3 + 1] < BK_RIM + 0.012) {
       const ix0 = BK.a0 + BK.wall
       const ix1 = BK.a1 - BK.wall
       const iz0 = BK.b0 + BK.wall
       const iz1 = BK.b1 - BK.wall
       const inside = x > ix0 && x < ix1 && z > iz0 && z < iz1
       if (!inside) {
-        // In a wall: back to the side it came from.
+        // In a wall (or resting on its rim): pushed inside, unless it came from outside the basket.
         const px = prev[k * 3]
         const pz = prev[k * 3 + 2]
-        if (px > ix0 && px < ix1 && pz > iz0 && pz < iz1) {
+        const cameFromOutside = px < BK.a0 || px > BK.a1 || pz < BK.b0 || pz > BK.b1
+        if (!cameFromOutside) {
           x = Math.min(ix1, Math.max(ix0, x))
           z = Math.min(iz1, Math.max(iz0, z))
         } else {
