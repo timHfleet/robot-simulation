@@ -8,10 +8,11 @@
  * physics engine makes it a dynamic body the hands can pick up. The bin and hamper are
  * hollow and fixed (and are furniture for the base's path and collision checks).
  */
-import { DINING_FOOTPRINTS } from './dining'
+import { DINING, DINING_FOOTPRINTS, PLACES } from './dining'
 import { BEDROOM_FOOTPRINTS } from './bedroom'
 import { DOORWAYS, HOUSE_FOOTPRINTS, LIVING_FOOTPRINTS, START } from './house'
 import * as THREE from 'three'
+import { RoundedBoxGeometry } from 'three/examples/jsm/geometries/RoundedBoxGeometry.js'
 import { DOCKS, FURNITURE, KITCHEN, LAUNDRY, furnitureRects, stationQuat, toWorld, type StationId } from '../lib/stations'
 import { createFloorCloth, type FloorCloth, type FloorTowel } from './floorCloth'
 import { towelTextures, wickerTextures } from './textures'
@@ -21,7 +22,7 @@ export type PropShape =
   | { kind: 'cyl'; r: number; h: number }
   | { kind: 'box'; hx: number; hy: number; hz: number; y?: number }
 
-export type ClutterKind = 'trash' | 'towel' | 'mug'
+export type ClutterKind = 'trash' | 'towel' | 'mug' | 'tableware'
 export interface ClutterProp {
   id: string
   kind: ClutterKind
@@ -116,6 +117,7 @@ function labelTexture(base: string, accent: string, text: string) {
 // --- Pieces ------------------------------------------------------------------------------
 const PAPER = [mat('#f4f1ea', { roughness: 0.95, flatShading: true }), mat('#fdf6c3', { roughness: 0.95, flatShading: true }), mat('#e6eef7', { roughness: 0.95, flatShading: true })]
 const CAN_TEX = [labelTexture('#c8102e', '#ffffff', 'COLA'), labelTexture('#0f5132', '#a3e635', 'LIME'), labelTexture('#1e3a8a', '#93c5fd', 'FIZZ'), labelTexture('#f59e0b', '#7c2d12', 'ORNG')]
+const RoundedBox = (w: number, h: number, d: number, r: number) => new RoundedBoxGeometry(w, h, d, 2, Math.min(r, h / 2 - 1e-4, d / 2 - 1e-4))
 const ALU = mat('#d4d8de', { metalness: 0.9, roughness: 0.3 })
 
 function paperBall(r: () => number): Loose {
@@ -188,6 +190,80 @@ function mug(color: string): Loose {
   handle.position.set(0.042, 0, 0)
   g.add(inside, handle)
   return { obj: shadowed(g), shape: { kind: 'cyl', r: 0.04, h: 0.09 }, density: 700, friction: 0.5 }
+}
+
+// ---------------------------------------------------------------------------
+// Tableware for the places laid on the dining table
+// ---------------------------------------------------------------------------
+const CHINA = new THREE.MeshPhysicalMaterial({ color: '#fbfaf7', roughness: 0.18, clearcoat: 0.7 })
+const STEEL = mat('#d9dde2', { metalness: 1, roughness: 0.18 })
+
+/** A dinner plate: a lathe-turned profile with a well and a raised rim (26 cm). */
+function dinnerPlate(): Loose {
+  const R = 0.13
+  const pts = [
+    [0, -0.009], [0.07, -0.009], [0.075, -0.006], [0.085, -0.004], [0.1, 0.002], [0.125, 0.007], [R, 0.009],
+    [R, 0.011], [0.124, 0.0095], [0.1, 0.0045], [0.084, -0.0015], [0.07, -0.004], [0, -0.004],
+  ].map(([x, y]) => new THREE.Vector2(x, y))
+  const g = new THREE.Group()
+  g.add(new THREE.Mesh(new THREE.LatheGeometry(pts, 48), CHINA))
+  // A thin gold band near the rim.
+  const band = new THREE.Mesh(new THREE.TorusGeometry(0.118, 0.0012, 6, 64), mat('#c9a35a', { metalness: 0.9, roughness: 0.3 }))
+  band.rotation.x = Math.PI / 2
+  band.position.y = 0.0062
+  g.add(band)
+  return { obj: shadowed(g), shape: { kind: 'cyl', r: R, h: 0.02 }, density: 900, friction: 0.5 }
+}
+
+/** A drinking glass (tumbler) with a heavy base, a little water in it. */
+function tumbler(): Loose {
+  const g = new THREE.Group()
+  const pts = [
+    [0, -0.05], [0.033, -0.05], [0.036, -0.045], [0.038, 0.05], [0.035, 0.05], [0.0335, -0.035], [0, -0.035],
+  ].map(([x, y]) => new THREE.Vector2(x, y))
+  const glass = new THREE.MeshPhysicalMaterial({ color: '#e8f1f5', roughness: 0.05, transparent: true, opacity: 0.35, clearcoat: 1, side: THREE.DoubleSide })
+  g.add(new THREE.Mesh(new THREE.LatheGeometry(pts, 32), glass))
+  const water = new THREE.Mesh(new THREE.CylinderGeometry(0.033, 0.032, 0.04, 28), new THREE.MeshPhysicalMaterial({ color: '#cfe6f0', roughness: 0.1, transparent: true, opacity: 0.45 }))
+  water.position.y = -0.015
+  g.add(water)
+  return { obj: g, shape: { kind: 'cyl', r: 0.038, h: 0.1 }, density: 600, friction: 0.5 }
+}
+
+/** Cutlery lies flat, its length along local x (the head at +x), origin on the table under its middle. */
+function cutlery(kind: 'fork' | 'knife' | 'spoon'): Loose {
+  const g = new THREE.Group()
+  const L = kind === 'knife' ? 0.215 : 0.19
+  const t = 0.004
+  // Handle: a flat, slightly wider stem toward the diner.
+  const handle = new THREE.Mesh(RoundedBox(L * 0.55, t, 0.018, 0.0018), STEEL)
+  handle.position.set(-L / 2 + (L * 0.55) / 2, t / 2, 0)
+  g.add(handle)
+  const neck = new THREE.Mesh(new THREE.BoxGeometry(L * 0.12, t * 0.8, 0.008), STEEL)
+  neck.position.set(-L / 2 + L * 0.61, t / 2, 0)
+  g.add(neck)
+  const headX = -L / 2 + L * 0.67
+  const headLen = L - L * 0.67
+  if (kind === 'knife') {
+    const blade = new THREE.Mesh(RoundedBox(headLen, t * 0.6, 0.02, 0.001), STEEL)
+    blade.position.set(headX + headLen / 2, t * 0.3, 0.002)
+    g.add(blade)
+  } else if (kind === 'fork') {
+    const base = new THREE.Mesh(new THREE.BoxGeometry(0.02, t * 0.8, 0.024), STEEL)
+    base.position.set(headX + 0.01, t / 2, 0)
+    g.add(base)
+    for (let k = 0; k < 4; k++) {
+      const tine = new THREE.Mesh(new THREE.BoxGeometry(headLen - 0.02, t * 0.7, 0.0035), STEEL)
+      tine.position.set(headX + 0.02 + (headLen - 0.02) / 2, t / 2, -0.009 + k * 0.006)
+      g.add(tine)
+    }
+  } else {
+    const bowl = new THREE.Mesh(new THREE.SphereGeometry(1, 20, 10, 0, Math.PI * 2, Math.PI / 2, Math.PI / 2), STEEL)
+    bowl.scale.set(headLen / 2, 0.008, 0.02)
+    bowl.rotation.x = Math.PI
+    bowl.position.set(headX + headLen / 2, 0.009, 0)
+    g.add(bowl)
+  }
+  return { obj: shadowed(g), shape: { kind: 'box', hx: L / 2, hy: 0.004, hz: 0.012, y: 0.004 }, density: 2500, friction: 0.6 }
 }
 
 /**
@@ -322,7 +398,7 @@ export function buildClutter(scene: THREE.Scene, obstacles: { x: number; z: numb
     { kind: 'tub', x: bin.pos.x, z: bin.pos.z, r: T.r, h: T.h },
     { kind: 'tub', x: hp.pos.x, z: hp.pos.z, r: H.r, h: H.h },
   ]
-  const count: Record<ClutterKind, number> = { trash: 0, towel: 0, mug: 0 }
+  const count: Record<ClutterKind, number> = { trash: 0, towel: 0, mug: 0, tableware: 0 }
 
   /** Put a prop on the floor at (x, z), lying (axis level) or standing, turned by yaw. */
   const place = (loose: Loose, x: number, z: number, yaw: number, lying: boolean, kind: ClutterKind = 'trash') => {
@@ -376,6 +452,31 @@ export function buildClutter(scene: THREE.Scene, obstacles: { x: number; z: numb
     place(towel(r, '#a5b4fc', '#e0e7ff'), 4.0, -3.3, 1.1, false, 'towel')
     place(towel(r, '#fca5a5', '#fee2e2'), 4.5, -4.2, -0.5, false, 'towel')
     place(towel(r, '#fde68a', '#fffbeb'), -2.4, 2.0, 2.0, false, 'towel')
+  }
+
+  // The dining table laid for six: at each place a plate, a glass up to the right, a fork on
+  // the left, a knife and a spoon on the right (all loose, like the rest).
+  {
+    const onTable = (loose: Loose, x: number, z: number, yaw: number) => {
+      const pr: ClutterProp = { ...loose, kind: 'tableware', id: `tableware${count.tableware++}` }
+      const o = pr.obj
+      o.name = pr.id
+      o.quaternion.setFromAxisAngle(new THREE.Vector3(0, 1, 0), yaw)
+      const s = pr.shape
+      o.position.set(x, DINING.h + (s.kind === 'cyl' ? s.h / 2 : 0) + 0.001, z)
+      scene.add(o)
+      props.push(pr)
+    }
+    for (const p of PLACES) {
+      const rx = -p.fz
+      const rz = p.fx
+      const yaw = Math.atan2(-p.fz, p.fx) // cutlery heads point away from the diner
+      onTable(dinnerPlate(), p.x, p.z, 0)
+      onTable(tumbler(), p.x + p.fx * 0.13 + rx * 0.13, p.z + p.fz * 0.13 + rz * 0.13, 0)
+      onTable(cutlery('fork'), p.x - rx * 0.17, p.z - rz * 0.17, yaw)
+      onTable(cutlery('knife'), p.x + rx * 0.165, p.z + rz * 0.165, yaw)
+      onTable(cutlery('spoon'), p.x + rx * 0.205, p.z + rz * 0.205, yaw)
+    }
   }
 
   // Litter all over the floor, kept out of furniture, obstacles, the docks and the robot's start.

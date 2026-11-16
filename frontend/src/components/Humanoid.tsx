@@ -33,7 +33,7 @@ import { DOCKS, ITEMS, KITCHEN, LAUNDRY, STAGING, doorAngleFor, foldAngleFor, fu
 import { handPath, keepOutsAll, keepOutsFor, keepOutsRound, pathSteps, toRobotGoal, waistForMove, type HandGoal } from '../lib/motion'
 import { TASKS, planTask, type Act, type Mechanism, type PlanCtx, type TaskId } from '../lib/tasks'
 import { ballOf, buildClutter, type Clutter } from './clutter'
-import { DINING_FOOTPRINTS, buildDining } from './dining'
+import { DINING_FOOTPRINTS, DINING_STATICS, buildDining } from './dining'
 import { BEDROOM_FOOTPRINTS, buildBedroom } from './bedroom'
 import { PLAN_WALLS, HOUSE_FOOTPRINTS, LIVING_FOOTPRINTS, START, buildHouse, fadeWalls } from './house'
 import { FloorGrid, planPath, pathLength, type Disc, type Pt } from '../lib/pathPlan'
@@ -228,15 +228,16 @@ const speedForClearance = (d: number) => (d >= CLEAR.slow ? Infinity : Math.max(
 // Poses (degrees, in ARM order: shoulder pitch, roll, twist, elbow, forearm twist, wrist pitch, wrist yaw)
 // ---------------------------------------------------------------------------
 const Q = (...d: number[]) => d.map(rad)
+/** Arms hanging relaxed at the sides (where they start). */
+const HANG = Q(0, 6, 0, 12, 0, 0, 0)
+/** The IK's preferred posture (elbows bent, hands forward): it biases solutions, it isn't a button. */
+const REST = Q(22, 12, 0, 78, 0, -10, 0)
+/** Pose buttons. (No forearms-out "ready"/"carry" or T-pose: they read as a mantis or a mannequin.) */
 const PRESETS: { label: string; q: number[]; grip: number }[] = [
-  { label: 'Ready', q: Q(22, 12, 0, 78, 0, -10, 0), grip: 0.6 },
-  { label: 'Rest', q: Q(0, 6, 0, 12, 0, 0, 0), grip: 0.2 },
+  { label: 'Rest', q: HANG, grip: 0.2 },
   { label: 'Reach', q: Q(80, 8, 0, 6, 0, 0, 0), grip: 1 },
-  { label: 'Carry', q: Q(10, 4, 0, 95, 90, -5, 0), grip: 0.4 },
   { label: 'Arms up', q: Q(165, 22, 0, 8, 0, 0, 0), grip: 1 },
-  { label: 'T-pose', q: Q(0, 90, 0, 0, 0, 0, 0), grip: 1 },
 ]
-const REST = PRESETS[0].q
 const WAVE = Q(0, 80, -90, 90, 0, 0, 0)
 
 // ---------------------------------------------------------------------------
@@ -783,7 +784,7 @@ function buildWorld(el: HTMLDivElement): World {
   buildDining(scene)
   buildBedroom(scene)
   // The walls, the dining set and the living room and bedroom furniture are solid for loose things too (as their footprints).
-  for (const f of [...HOUSE_FOOTPRINTS, ...DINING_FOOTPRINTS, ...BEDROOM_FOOTPRINTS, ...LIVING_FOOTPRINTS]) clutter.statics.push({ kind: 'box', x: (f.x0 + f.x1) / 2, z: (f.z0 + f.z1) / 2, w: f.x1 - f.x0, d: f.z1 - f.z0, h: f.h })
+  for (const f of [...HOUSE_FOOTPRINTS, ...DINING_STATICS, ...BEDROOM_FOOTPRINTS, ...LIVING_FOOTPRINTS]) clutter.statics.push({ kind: 'box', x: (f.x0 + f.x1) / 2, z: (f.z0 + f.z1) / 2, w: f.x1 - f.x0, d: f.z1 - f.z0, h: f.h })
   // Crates and barrels are solid for the litter too.
   for (const o of OBSTACLES)
     clutter.statics.push(o.kind === 'crate' ? { kind: 'box', x: o.x, z: o.z, w: o.w, d: o.d, h: o.h } : { kind: 'cyl', x: o.x, z: o.z, r: o.r, h: o.h })
@@ -929,7 +930,7 @@ export default function Humanoid() {
     pan: 0,
     tilt: 0,
     // Idle: arms hanging straight down at the sides.
-    arms: { L: [...PRESETS[1].q], R: [...PRESETS[1].q] },
+    arms: { L: [...HANG], R: [...HANG] },
     grip: { L: 0.6, R: 0.6 },
     armMode: 'joint',
     armSel: 'both',

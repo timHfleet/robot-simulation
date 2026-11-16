@@ -50,6 +50,42 @@ export const DINING_FOOTPRINTS: Footprint[] = [
   }),
 ]
 
+/**
+ * The same for physics: each chair's box stops at the table's edge (a seat tucks under it, but
+ * its box is as tall as the chair back, and would swallow whatever is laid at the table's edge).
+ */
+export const DINING_STATICS: Footprint[] = DINING_FOOTPRINTS.map((f, i) => {
+  if (i === 0) return f
+  const t = DINING_FOOTPRINTS[0]
+  const c = { ...f }
+  if (c.x1 > t.x0 && c.x0 < t.x1 && c.z1 > t.z0 && c.z0 < t.z1) {
+    // Cut back along whichever side overlaps the least.
+    const cuts: [keyof Footprint, number, number][] = [
+      ['x1', t.x0, c.x1 - t.x0],
+      ['x0', t.x1, t.x1 - c.x0],
+      ['z1', t.z0, c.z1 - t.z0],
+      ['z0', t.z1, t.z1 - c.z0],
+    ]
+    const [k, v] = cuts.filter((q) => q[2] > 0).sort((a, b) => a[2] - b[2])[0]
+    c[k] = v
+  }
+  return c
+})
+
+/**
+ * A place laid for each chair: where its plate goes (on the table, 17 cm in from the edge in
+ * front of the chair) and which way the diner faces (fx, fz).
+ */
+export const PLACES: { x: number; z: number; fx: number; fz: number }[] = chairs.map((c) => {
+  const yaw = Math.round(c.yaw / (Math.PI / 2)) * (Math.PI / 2) // the turned chair's place is laid square
+  const fx = Math.round(Math.cos(yaw))
+  const fz = Math.round(-Math.sin(yaw))
+  const inset = 0.17
+  return fx !== 0
+    ? { x: DINING.x - fx * (DINING.w / 2 - inset), z: c.z, fx, fz }
+    : { x: DINING.x, z: DINING.z - fz * (DINING.l / 2 - inset), fx, fz }
+})
+
 const mat = (color: string, extra: Partial<THREE.MeshStandardMaterialParameters> = {}) =>
   new THREE.MeshStandardMaterial({ color, roughness: 0.6, metalness: 0, ...extra })
 function shadowed<T extends THREE.Object3D>(o: T): T {
