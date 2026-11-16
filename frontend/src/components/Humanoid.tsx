@@ -1304,6 +1304,7 @@ export default function Humanoid() {
       held: () => ({ ...(phys ? phys.stats().held : {}), ...clothHeld }),
       tcp: (side) => tcpWorld(side),
       closeAxis: (side) => new THREE.Vector3(0, 0, 1).applyQuaternion(w.arms[side].tcp.getWorldQuaternion(new THREE.Quaternion())),
+      handDir: (side) => new THREE.Vector3(0, -1, 0).applyQuaternion(w.arms[side].tcp.getWorldQuaternion(new THREE.Quaternion())),
       robot: () => ({ x: sim.x, z: sim.z, yaw: sim.yaw }),
       free: (x, z, yaw) => !blockedAt(x, z, yaw),
       workClear: (x, z, yaw) => armsClearAt(x, z, yaw),

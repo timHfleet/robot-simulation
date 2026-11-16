@@ -235,6 +235,8 @@ export function solveIK(
     keepOut?: KeepOut[] | null
     /** Only start from q0 (and the rest pose if that fails): for small steps along a path, so the arm never flips. */
     local?: boolean
+    /** Close along `close` exactly, not either way (a hand holding something must not roll it over). */
+    exactClose?: boolean
   },
 ): IKResult {
   const t0 = performance.now()
@@ -258,7 +260,7 @@ export function solveIK(
     let best: Attempt | null = null
     let bestOk: Attempt | null = null
     for (const seed of seeds) {
-      const r = dlsAttempt(side, seed, base, goal, dirT, closeT, opts.rest, opts.maxIters ?? 150, ka)
+      const r = dlsAttempt(side, seed, base, goal, dirT, closeT, opts.rest, opts.maxIters ?? 150, ka, !!opts.exactClose)
       iters += r.iters
       if (!best || score(r) < score(best)) best = r
       if (ok(r)) {
@@ -319,6 +321,7 @@ function dlsAttempt(
   rest: number[],
   maxIters: number,
   keepOut: KeepOut[] | null = null,
+  exact = false,
 ): Attempt {
   const lambda = 0.03
   const wDir = 0.3
@@ -348,7 +351,7 @@ function dlsAttempt(
       const zc = new THREE.Vector3(0, 0, 1).transformDirection(f.tool)
       // The two-finger gripper is symmetric: closing along -z is the same grasp, so
       // aim for whichever sign is nearer instead of spinning the wrist half a turn.
-      const zd = zc.dot(closeT) < 0 ? closeT.clone().negate() : closeT
+      const zd = !exact && zc.dot(closeT) < 0 ? closeT.clone().negate() : closeT
       const yd = dirT.clone().negate()
       const xd = new THREE.Vector3().crossVectors(yd, zd)
       dirErr = Math.acos(clamp((xc.dot(xd) + yc.dot(yd) + zc.dot(zd) - 1) / 2, -1, 1))
@@ -451,7 +454,7 @@ function dlsAttempt(
     const xc = new THREE.Vector3(1, 0, 0).transformDirection(f.tool)
     const yc = new THREE.Vector3(0, 1, 0).transformDirection(f.tool)
     const zc = new THREE.Vector3(0, 0, 1).transformDirection(f.tool)
-    const zd = zc.dot(closeT) < 0 ? closeT.clone().negate() : closeT
+    const zd = !exact && zc.dot(closeT) < 0 ? closeT.clone().negate() : closeT
     const yd = dirT.clone().negate()
     const xd = new THREE.Vector3().crossVectors(yd, zd)
     dirErr = Math.acos(clamp((xc.dot(xd) + yc.dot(yd) + zc.dot(zd) - 1) / 2, -1, 1))

@@ -18,6 +18,8 @@ export interface HandGoal {
   pos: THREE.Vector3
   dir: THREE.Vector3
   close: THREE.Vector3 | null
+  /** Close along `close` exactly, not either way. */
+  exact?: boolean
 }
 
 const STEP = 0.03
@@ -48,7 +50,7 @@ export function handPath(
 ): { qs: number[][]; res: IKResult } {
   const s = startPose(side, q0, lift, w0)
   // The gripper is symmetric: closing along c or -c is the same grasp.
-  const c0 = goal.close && s.c.dot(goal.close) < 0 ? s.c.clone().negate() : s.c
+  const c0 = goal.close && !goal.exact && s.c.dot(goal.close) < 0 ? s.c.clone().negate() : s.c
   const close = (r: IKResult) => r.reached || (r.posErr < 0.05 && r.dirErr < 0.35)
   /**
    * Walk the hand along the line. The arm's spare freedom changes as little as possible
@@ -70,7 +72,7 @@ export function handPath(
       // spare freedom stays as it is.
       const P = opts.posture
       const seed = P ? q.map((v, i) => v + (P[i] - v) / (steps - k + 1)) : q
-      res = solveIK(side, seed, torsoBase(lift, w0 + (w1 - w0) * t), p, { dir: d, close: c, rest: P ?? q, keepOut: opts.keepOut, local: true })
+      res = solveIK(side, seed, torsoBase(lift, w0 + (w1 - w0) * t), p, { dir: d, close: c, rest: P ?? q, keepOut: opts.keepOut, local: true, exactClose: goal.exact })
       q = res.q
       qs.push(q)
     }
@@ -80,7 +82,7 @@ export function handPath(
   if (close(first.res)) return first
   // No smooth way along the line: find a pose that reaches the goal and blend every
   // joint toward it over the whole move, rather than snapping at the end.
-  const wide = solveIK(side, q0, torsoBase(lift, w1), goal.pos, { dir: goal.dir, close: goal.close, rest: opts.posture ?? opts.rest, keepOut: opts.keepOut })
+  const wide = solveIK(side, q0, torsoBase(lift, w1), goal.pos, { dir: goal.dir, close: goal.close, rest: opts.posture ?? opts.rest, keepOut: opts.keepOut, exactClose: goal.exact })
   if (!wide.reached && wide.posErr >= first.res.posErr) return first
   const qs = Array.from({ length: steps }, (_, k) => q0.map((v, i) => v + ((wide.q[i] - v) * (k + 1)) / steps))
   return { qs, res: wide }
@@ -106,6 +108,7 @@ export function toRobotGoal(g: Target, robot: RobotPose, lift: number, waist: nu
       pos: aboutWaist(g.pos.clone().add(new THREE.Vector3(0, lift, 0)), waist, true),
       dir: aboutWaist(g.approach, waist, false).normalize(),
       close: g.close ? aboutWaist(g.close, waist, false).normalize() : null,
+      exact: g.exactClose,
     }
   }
   const inv = (v: THREE.Vector3) => v.clone().applyAxisAngle(Y, -robot.yaw)
@@ -113,6 +116,7 @@ export function toRobotGoal(g: Target, robot: RobotPose, lift: number, waist: nu
     pos: inv(g.pos.clone().sub(new THREE.Vector3(robot.x, 0, robot.z))),
     dir: inv(g.approach).normalize(),
     close: g.close ? inv(g.close).normalize() : null,
+    exact: g.exactClose,
   }
 }
 
