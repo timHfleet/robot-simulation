@@ -14,11 +14,11 @@ import { addFadeable } from './house'
 import { knitBump, paintTexture, woodTexture } from './textures'
 
 /** The back wall's front face (z), and its ends and height. */
-export const BEDROOM = { wallZ: 5.0, x0: -2.95, x1: 5.35, wallH: 2.45 }
-const BED = { x0: 2.1, x1: 3.6, z0: 3.0, z1: 4.97, frameH: 0.32, mattressTop: 0.56 }
+export const BEDROOM = { wallZ: 5.0, x0: -5.05, x1: -0.75, wallH: 2.45 }
+const BED = { x0: -3.3, x1: -1.8, z0: 3.0, z1: 4.97, frameH: 0.32, mattressTop: 0.56 }
 const STAND = { w: 0.45, d: 0.4, h: 0.56 }
-const STANDS = [1.55, 3.7] // left edges (x) of the two nightstands
-const DRESSER = { x0: -2.8, x1: -1.9, d: 0.46, h: 0.84 }
+const STANDS = [-3.8, -1.75] // left edges (x) of the two nightstands
+const DRESSER = { x0: -4.9, x1: -4.0, d: 0.46, h: 0.84 }
 
 export const BEDROOM_FOOTPRINTS: Footprint[] = [
   { x0: BEDROOM.x0, x1: BEDROOM.x1, z0: BEDROOM.wallZ, z1: BEDROOM.wallZ + 0.06, h: BEDROOM.wallH },

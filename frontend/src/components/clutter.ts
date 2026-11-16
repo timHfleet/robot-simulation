@@ -368,14 +368,14 @@ export function buildClutter(scene: THREE.Scene, obstacles: { x: number; z: numb
       const p = at('kitchen', misses[i][0], misses[i][1])
       place(paperBall(r), p.x, p.z, r() * 6, false)
     }
-    const pz = at('kitchen', -0.3, -1.2)
+    const pz = at('kitchen', -0.5, -1.0)
     place(takeawayBox(), pz.x, pz.z, 0.3, false)
   }
   // Towels: two dropped in the laundry room past the dryer, one in the bedroom.
   {
-    place(towel(r, '#a5b4fc', '#e0e7ff'), 4.25, -1.2, 1.1, false, 'towel')
-    place(towel(r, '#fca5a5', '#fee2e2'), 4.75, -1.85, -0.5, false, 'towel')
-    place(towel(r, '#fde68a', '#fffbeb'), -1.5, 3.75, 2.0, false, 'towel')
+    place(towel(r, '#a5b4fc', '#e0e7ff'), 4.0, -3.3, 1.1, false, 'towel')
+    place(towel(r, '#fca5a5', '#fee2e2'), 4.5, -4.2, -0.5, false, 'towel')
+    place(towel(r, '#fde68a', '#fffbeb'), -2.4, 2.0, 2.0, false, 'towel')
   }
 
   // Litter all over the floor, kept out of furniture, obstacles, the docks and the robot's start.
@@ -384,7 +384,7 @@ export function buildClutter(scene: THREE.Scene, obstacles: { x: number; z: numb
     if (Math.hypot(x - START.x, z - START.z) < 0.6) return false
     for (const q of DOORWAYS) if (x > q.x0 && x < q.x1 && z > q.z0 && z < q.z1) return false
     // Well out from the walls: the arms can't reach down beside a tall wall.
-    for (const q of HOUSE_FOOTPRINTS) if (x > q.x0 - 0.5 && x < q.x1 + 0.5 && z > q.z0 - 0.5 && z < q.z1 + 0.5) return false
+    for (const q of HOUSE_FOOTPRINTS) if (x > q.x0 - 0.75 && x < q.x1 + 0.75 && z > q.z0 - 0.75 && z < q.z1 + 0.75) return false
     // Somewhere beside it the base can stand (clear of furniture and walls by its turning
     // margin), so the robot can reach it.
     const standable = (cx: number, cz: number) => rects.every((q) => Math.hypot(Math.max(q.x0 - cx, 0, cx - q.x1), Math.max(q.z0 - cz, 0, cz - q.z1)) >= 0.62)
@@ -413,8 +413,9 @@ export function buildClutter(scene: THREE.Scene, obstacles: { x: number; z: numb
   // 10 pieces of rubbish in all: the 4 by the bin (3 missed shots and the takeaway box) and 6 about the room.
   const SCATTERED = 6
   for (let tries = 0; placed < SCATTERED && tries < 2000; tries++) {
-    const x = -1.55 + r() * 4.2
-    const z = (r() - 0.5) * 5.2
+    // Anywhere in the house.
+    const x = -4.6 + r() * 9.2
+    const z = -4.6 + r() * 9.2
     if (!clear(x, z, 0.15)) continue // room for the robot to reach it without touching the furniture
     const [pr, lying] = makers[Math.floor(r() * makers.length)]()
     place(pr, x, z, r() * Math.PI * 2, lying)

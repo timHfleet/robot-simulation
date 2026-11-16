@@ -340,7 +340,9 @@ function rackMoveActs(rack: RackId, from: number, to: number): Act[] {
     { k: 'say', text: `${to > from ? 'Pulling out' : 'Pushing in'} the ${rack} rack` },
     { k: 'lift', h: liftFor(h0.y + 0.1, false) },
     { k: 'grip', side: 'R', g: 0.7 },
-    // Come in from out in front of the rack, not across it (dishes stand near its front edge).
+    // Come in from out in front of the rack, not across it (dishes stand near its front edge):
+    // well above the plate tops first, then down in front of the rack.
+    { k: 'move', arms: { R: T(h0.clone().addScaledVector(fwd, -0.25).addScaledVector(UP, 0.3), ap, cl) } },
     { k: 'move', arms: { R: T(h0.clone().addScaledVector(fwd, -0.2).addScaledVector(UP, 0.12), ap, cl) } },
     { k: 'move', arms: { R: T(h0.clone().addScaledVector(fwd, -0.08).addScaledVector(UP, 0.02), ap, cl) } },
     { k: 'move', arms: { R: T(h0, ap, cl) }, slow: true },
@@ -1183,16 +1185,40 @@ function planCleanup(ctx: PlanCtx): Act[] {
     const slotLocal: [number, number, number] = [sl.a, K.cup.h / 2 + 0.004, sl.b]
     const slot = W(o.x + sl.a, o.y + K.cup.h / 2 + 0.015, sl.b) // let go just above the slot
     // Fingers forward and closing along `right`: the mug's axis (along the hand) turns vertical.
+    // Put the mug (not the hand) over the slot: allow for where it really sits in the fingers,
+    // which varies, picked up off the floor. Off-centre, it lands on a post and topples.
+    const at = () => slot.clone().add(ctx.tcp(side).sub(ctx.item(id).pos))
     return [
       { k: 'lift', h: liftFor(slot.y, false) },
-      { k: 'move', arms: { [side]: T(slot.clone().addScaledVector(fwd, -0.14).addScaledVector(UP, 0.06), fwd, right) } },
-      { k: 'move', arms: { [side]: T(slot, fwd, right) }, slow: true },
+      {
+        k: 'plan',
+        make: (): Act[] => {
+          const hand = at()
+          // In from the front well above the posts round the slot, over it, then straight down
+          // (coming in low, the mug's base catches the front posts and twists in the fingers).
+          return [
+            { k: 'move', arms: { [side]: T(hand.clone().addScaledVector(fwd, -0.14).addScaledVector(UP, 0.1), fwd, right) } },
+            { k: 'move', arms: { [side]: T(hand.clone().addScaledVector(UP, 0.09), fwd, right) }, slow: true },
+            { k: 'move', arms: { [side]: T(hand, fwd, right) }, slow: true },
+          ]
+        },
+      },
       // Open just enough to let go (wide open, the fingers knock the mug next to it).
       { k: 'grip', side, g: Math.min(1, gripFor(2 * K.cup.r) + 0.12) },
       { k: 'release', side, item: id, container: 'kitchen.upper', pos: slotLocal, yaw: 0, where: 'rack' },
-      // Straight back out of the slot (not up through the mug), then up.
-      { k: 'move', arms: { [side]: T(slot.clone().addScaledVector(fwd, -0.12), fwd, right) } },
-      { k: 'move', arms: { [side]: T(slot.clone().addScaledVector(fwd, -0.16).addScaledVector(UP, 0.08), fwd, right) } },
+      // Let it settle, then straight back out of the slot (not up through the mug), slowly so the
+      // fingers don't drag it over, then up.
+      { k: 'wait', t: 0.4 },
+      {
+        k: 'plan',
+        make: (): Act[] => {
+          const hand = ctx.tcp(side)
+          return [
+            { k: 'move', arms: { [side]: T(hand.clone().addScaledVector(fwd, -0.12), fwd, right) }, slow: true },
+            { k: 'move', arms: { [side]: T(hand.clone().addScaledVector(fwd, -0.16).addScaledVector(UP, 0.08), fwd, right) } },
+          ]
+        },
+      },
       { k: 'move', arms: { [side]: tuck(side) } },
     ]
   }

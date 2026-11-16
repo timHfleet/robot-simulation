@@ -16,7 +16,7 @@ import type { Footprint } from './dining'
 import { knitBump, paintTexture, woodTexture } from './textures'
 
 /** Where the robot starts (living room). */
-export const START = { x: 0.75, z: 0.5 }
+export const START = { x: 1.2, z: -1.0 }
 
 const T = 0.1 // wall thickness
 const H = 2.45 // wall height
@@ -27,12 +27,10 @@ const LEAF_T = 0.04
 
 /** Rooms (floor rectangles). */
 export const ROOMS = {
-  kitchen: { x0: -2.9, x1: -0.1, z0: -2.7, z1: 2.85 },
-  laundry: { x0: -0.1, x1: 5.3, z0: -2.7, z1: -0.5 },
-  living: { x0: -0.1, x1: 5.3, z0: -0.5, z1: 2.4 },
-  bedroom: { x0: -2.9, x1: 5.3, z0: 2.85, z1: 5.0 },
-  /** The bedroom's front strip beside the kitchen (it's L-shaped). */
-  bedroomFront: { x0: -0.1, x1: 5.3, z0: 2.4, z1: 2.85 },
+  kitchen: { x0: -5.0, x1: -0.8, z0: -5.0, z1: 0.4 },
+  laundry: { x0: -0.8, x1: 5.3, z0: -5.0, z1: -2.4 },
+  living: { x0: -0.8, x1: 5.3, z0: -2.4, z1: 5.0 },
+  bedroom: { x0: -5.0, x1: -0.8, z0: 0.4, z1: 5.0 },
 }
 
 /**
@@ -49,14 +47,15 @@ interface WallLine {
   door?: { c0: number; swing: 1 | -1 }
 }
 const WALLS: WallLine[] = [
-  { name: 'north', axis: 'x', at: -2.7, from: -2.95, to: 5.35 },
-  { name: 'west', axis: 'z', at: -2.9, from: -2.7, to: 5.0 },
-  { name: 'east', axis: 'z', at: 5.3, from: -2.7, to: 5.0 },
-  // The bedroom's back wall (z = 5) is the bedroom's own, painted sage (bedroom.ts).
-  { name: 'kitchen', axis: 'z', at: -0.1, from: -2.65, to: 2.9, door: { c0: -0.35, swing: -1 } },
-  { name: 'kitchenSouth', axis: 'x', at: 2.85, from: -2.85, to: -0.15 },
-  { name: 'laundry', axis: 'x', at: -0.5, from: -0.05, to: 5.25, door: { c0: 0.7, swing: -1 } },
-  { name: 'bedroom', axis: 'x', at: 2.4, from: -0.05, to: 5.25, door: { c0: 0.7, swing: 1 } },
+  { name: 'north', axis: 'x', at: -5.0, from: -5.05, to: 5.35 },
+  { name: 'west', axis: 'z', at: -5.0, from: -5.0, to: 5.0 },
+  { name: 'east', axis: 'z', at: 5.3, from: -5.0, to: 5.0 },
+  // The bedroom's back wall is its own, painted sage (bedroom.ts); this is the living room's.
+  { name: 'south', axis: 'x', at: 5.05, from: -0.85, to: 5.35 },
+  { name: 'kitchen', axis: 'z', at: -0.8, from: -4.95, to: 0.4, door: { c0: -2.0, swing: -1 } },
+  { name: 'kitchenSouth', axis: 'x', at: 0.4, from: -4.95, to: -0.85 },
+  { name: 'bedroom', axis: 'z', at: -0.8, from: 0.45, to: 5.0, door: { c0: 1.2, swing: -1 } },
+  { name: 'laundry', axis: 'x', at: -2.4, from: -0.75, to: 5.25, door: { c0: 1.0, swing: -1 } },
 ]
 
 /** A wall-aligned box: `u` along the wall, `n` across it (world rect). */
@@ -105,10 +104,12 @@ export const DOORWAYS = WALLS.filter((w) => w.door).map((w) => rectOf(w, w.door!
 // ---------------------------------------------------------------------------
 // Living room furniture
 // ---------------------------------------------------------------------------
-const TV = { x0: 2.35, x1: 3.3, z0: -0.45, z1: -0.05, h: 0.48 }
-const SOFA = { x0: 2.1, x1: 3.3, z0: 1.5, z1: 2.34, seat: 0.43, back: 0.82, arm: 0.6 }
-const COFFEE = { x0: 2.35, x1: 3.1, z0: 0.5, z1: 0.95, h: 0.42 }
-const LAMP = { x: 3.52, z: 2.17, r: 0.16 }
+// The lounge in the living room's north-east corner (TV against the laundry wall, the sofa
+// facing it), leaving the rest of the room open round the dining table.
+const TV = { x0: 3.4, x1: 4.6, z0: -2.35, z1: -1.95, h: 0.48 }
+const SOFA = { x0: 3.3, x1: 4.7, z0: -0.25, z1: 0.59, seat: 0.43, back: 0.82, arm: 0.6 }
+const COFFEE = { x0: 3.6, x1: 4.4, z0: -1.25, z1: -0.8, h: 0.42 }
+const LAMP = { x: 4.95, z: 0.75, r: 0.16 }
 
 export const LIVING_FOOTPRINTS: Footprint[] = [
   { x0: TV.x0, x1: TV.x1, z0: TV.z0, z1: TV.z1, h: 1.15 },
@@ -280,19 +281,18 @@ export function buildHouse(scene: THREE.Scene) {
 
   // Floors: tiles in the kitchen and laundry room, oak boards in the living room, a paler
   // wood in the bedroom.
-  const bedTex = (w: number, d: number) => plankTexture([196, 160, 120], [w / 2.2, d / 2.2], 9)
+  const sz = (id: keyof typeof ROOMS) => [ROOMS[id].x1 - ROOMS[id].x0, ROOMS[id].z1 - ROOMS[id].z0]
   const floors: [keyof typeof ROOMS, THREE.Texture, number][] = [
-    ['kitchen', tileTexture([206, 200, 190], '#9b948a', 4, [2.8 / 1.2, 5.55 / 1.2]), 0.55],
-    ['laundry', tileTexture([180, 186, 192], '#8a9097', 6, [5.4 / 1.2, 2.2 / 1.2], 4), 0.6],
-    ['living', plankTexture([150, 104, 66], [5.4 / 2.2, 2.9 / 2.2]), 0.5],
-    ['bedroom', bedTex(8.2, 2.15), 0.55],
-    ['bedroomFront', bedTex(5.4, 0.45), 0.55],
+    ['kitchen', tileTexture([206, 200, 190], '#9b948a', 4, [sz('kitchen')[0] / 1.2, sz('kitchen')[1] / 1.2]), 0.55],
+    ['laundry', tileTexture([180, 186, 192], '#8a9097', 6, [sz('laundry')[0] / 1.2, sz('laundry')[1] / 1.2], 4), 0.6],
+    ['living', plankTexture([150, 104, 66], [sz('living')[0] / 2.2, sz('living')[1] / 2.2]), 0.5],
+    ['bedroom', plankTexture([196, 160, 120], [sz('bedroom')[0] / 2.2, sz('bedroom')[1] / 2.2], 9), 0.55],
   ]
   for (const [id, map, rough] of floors) {
     const r = ROOMS[id]
     const f = new THREE.Mesh(new THREE.PlaneGeometry(r.x1 - r.x0, r.z1 - r.z0), mat('#ffffff', { map, roughness: rough }))
     f.rotation.x = -Math.PI / 2
-    f.position.set((r.x0 + r.x1) / 2, 0.0015, (r.z0 + r.z1) / 2)
+    f.position.set((r.x0 + r.x1) / 2, 0.003, (r.z0 + r.z1) / 2)
     f.receiveShadow = true
     f.name = `floor_${id}`
     root.add(f)
@@ -381,7 +381,7 @@ function buildLiving(root: THREE.Group) {
   )
   const rug = new THREE.Mesh(new THREE.PlaneGeometry(2.1, 2.2), mat('#ffffff', { map: rugTex, roughness: 1 }))
   rug.rotation.x = -Math.PI / 2
-  rug.position.set(2.75, 0.004, 0.95)
+  rug.position.set((COFFEE.x0 + COFFEE.x1) / 2, 0.004, (TV.z1 + SOFA.z0) / 2)
   rug.receiveShadow = true
   g.add(rug)
 
@@ -482,11 +482,11 @@ function buildLiving(root: THREE.Group) {
     g.add(shadowed(base), shadowed(pole), shade, bulb)
   }
 
-  // A framed print over the sofa.
+  // A framed print on the east wall, beside the lounge.
   {
-    const px = (S.x0 + S.x1) / 2
-    const wz = ROOMS.living.z1 - T / 2 - 0.012
-    const frame = box(px - 0.45, px + 0.45, 1.25, 1.85, wz - 0.03, wz, mat('#e7e2d8', { roughness: 0.5 }), 0.004)
+    const pz = (TV.z1 + SOFA.z0) / 2
+    const wx = ROOMS.living.x1 - T / 2 - 0.012
+    const frame = box(wx - 0.03, wx, 1.25, 1.85, pz - 0.45, pz + 0.45, mat('#e7e2d8', { roughness: 0.5 }), 0.004)
     const art = canvasTex(
       360,
       240,
@@ -508,10 +508,10 @@ function buildLiving(root: THREE.Group) {
       [1, 1],
     )
     const pic = new THREE.Mesh(new THREE.PlaneGeometry(0.8, 0.5), mat('#ffffff', { map: art, roughness: 0.7 }))
-    pic.rotation.y = Math.PI
-    pic.position.set(px, 1.55, wz - 0.032)
+    pic.rotation.y = -Math.PI / 2
+    pic.position.set(wx - 0.032, 1.55, pz)
     // Hung on the wall, so it fades with it.
-    ;(root.getObjectByName('wall_bedroom') ?? g).add(frame, pic)
+    ;(root.getObjectByName('wall_east') ?? g).add(frame, pic)
   }
   root.add(g)
 }

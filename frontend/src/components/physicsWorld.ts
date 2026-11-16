@@ -310,7 +310,7 @@ export async function createPhysics(scene: THREE.Scene, stations: Stations, rig:
       }
     } else {
       const c = K.cupPosts
-      for (const s of [...K.cupSlots, ...K.mugSlots])
+      for (const s of K.cupSlots)
         for (let k = 0; k < 4; k++) {
           const t = Math.PI / 4 + (k * Math.PI) / 2
           const a = s.a + c.r * Math.cos(t)

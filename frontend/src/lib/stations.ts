@@ -17,12 +17,12 @@ export interface Dock {
 }
 
 export const DOCKS: Record<StationId, Dock> = {
-  // The sorting table is a desk against the bedroom's back wall; the folding table, the washer
+  // The sorting table is a desk against the bedroom's west wall; the folding table, the washer
   // and the dryer stand in one row along the laundry room's back wall (see house.ts).
-  sort: { x: -0.4, z: 4.0, yaw: -Math.PI / 2 },
-  kitchen: { x: -1.8, z: 0, yaw: Math.PI },
-  laundry: { x: 0.75, z: -1.7, yaw: Math.PI / 2 },
-  washer: { x: 2.3, z: -1.7, yaw: Math.PI / 2 },
+  sort: { x: -3.95, z: 1.4, yaw: Math.PI },
+  kitchen: { x: -3.9, z: -2.9, yaw: Math.PI },
+  laundry: { x: 0.6, z: -4.0, yaw: Math.PI / 2 },
+  washer: { x: 2.15, z: -4.0, yaw: Math.PI / 2 },
 }
 /** Shoulder height used at each station. */
 export const LIFTS: Record<StationId, number> = { sort: 1.18, kitchen: 1.0, laundry: 1.05, washer: 1.15 }
@@ -146,11 +146,15 @@ export const KITCHEN = {
     { a: 0.14, b: 0.08 },
     { a: 0.14, b: 0.17 },
   ],
-  /** Back-row slots in the upper rack for mugs brought in from the floor (Clean up room). */
+  /**
+   * Back-row places in the upper rack for mugs brought in from the floor (Clean up room). No
+   * posts round these (unlike the cup slots): a mug's handle would land on one and tip it over;
+   * standing mouth-down on the flat wires it's steady whichever way the handle points.
+   */
   mugSlots: [
-    { a: 0.28, b: -0.2 },
-    { a: 0.28, b: -0.08 },
-    { a: 0.28, b: 0.04 },
+    { a: 0.26, b: -0.19 },
+    { a: 0.26, b: -0.085 },
+    { a: 0.26, b: 0.02 },
   ],
 }
 export type RackId = 'lower' | 'upper'
@@ -183,7 +187,7 @@ export const LAUNDRY = {
   /** Where folded towels are stacked, on the right of the table. */
   stack: { a: 0.52, b: 0.38 },
   /** Laundry hamper on the floor at the end of the row, past the dryer (centre, radius, rim height). */
-  hamper: { a: 0.55, b: 2.85, r: 0.23, h: 0.48 },
+  hamper: { a: 0.4, b: 2.85, r: 0.23, h: 0.48 },
   /** Folds in order: left side, right side, then bottom half up. */
   folds: [
     { point: [0, 0.746, -0.08], n: [0, 0, -1], pinch: [0.55, -0.26] },

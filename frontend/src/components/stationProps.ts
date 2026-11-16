@@ -577,7 +577,7 @@ function buildKitchen(g: THREE.Group, pick: THREE.Object3D[]): KitchenParts {
       }
     } else {
       const c = K.cupPosts
-      for (const s of [...K.cupSlots, ...K.mugSlots])
+      for (const s of K.cupSlots)
         for (let k = 0; k < 4; k++) {
           const t = Math.PI / 4 + (k * Math.PI) / 2
           const post = new THREE.Mesh(new THREE.CylinderGeometry(0.003, 0.003, c.h, 6), M.wire)

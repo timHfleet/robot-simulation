@@ -1212,7 +1212,7 @@ export default function Humanoid() {
     }
     /**
      * Is a dish really where the task put it? Upright (plates on edge, mugs standing) and
-     * within 3 cm of its slot in the rack. Returns what went wrong, or null.
+     * near its slot in the rack (3 cm; 5 cm for a mug on the flat wires). Returns what went wrong, or null.
      */
     const rackProblem = (id: string, container: string, pos: [number, number, number]): string | null => {
       const o = objOf(id)
@@ -1227,7 +1227,10 @@ export default function Humanoid() {
       const tilt = kind === 'plate' ? Math.asin(Math.min(1, Math.abs(e[9]))) : Math.acos(Math.min(1, Math.abs(e[5])))
       if (tilt > THREE.MathUtils.degToRad(25)) return `tipped over in the rack (${Math.round(THREE.MathUtils.radToDeg(tilt))}° off upright)`
       const off = Math.hypot(local.x - pos[0], local.z - pos[2])
-      if (off > 0.03) return `landed ${Math.round(off * 100)} cm from its slot`
+      // Plates and cups go in slots (channels, posts); a mug from the floor stands on the flat
+      // wires, where a few centimetres either way is still a good place for it.
+      const tol = clutterOf(id)?.kind === 'mug' ? 0.05 : 0.03
+      if (off > tol) return `landed ${Math.round(off * 100)} cm from its slot`
       return null
     }
     /** At the end of a task, check every dish again: racks sliding in can still knock one over. */

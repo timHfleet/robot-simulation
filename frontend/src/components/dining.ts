@@ -12,7 +12,7 @@ import { RoundedBoxGeometry } from 'three/examples/jsm/geometries/RoundedBoxGeom
 import { woodTexture } from './textures'
 
 /** Table centre, its size (x across, z along the long side), and height. */
-export const DINING = { x: 4.3, z: 1.0, w: 0.95, l: 1.8, h: 0.76 }
+export const DINING = { x: 2.0, z: 2.35, w: 0.95, l: 1.8, h: 0.76 }
 
 /** Chairs: where each one stands and which way it faces (yaw: 0 faces +x). Seats tuck under the table edge. */
 const CHAIR_W = 0.46
