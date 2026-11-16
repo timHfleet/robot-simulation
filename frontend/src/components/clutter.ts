@@ -8,6 +8,8 @@
  * physics engine makes it a dynamic body the hands can pick up. The bin and hamper are
  * hollow and fixed (and are furniture for the base's path and collision checks).
  */
+import { DINING_FOOTPRINTS } from './dining'
+import { BEDROOM_FOOTPRINTS } from './bedroom'
 import * as THREE from 'three'
 import { DOCKS, FURNITURE, KITCHEN, LAUNDRY, furnitureRects, stationQuat, toWorld, type StationId } from '../lib/stations'
 import { createFloorCloth, type FloorCloth, type FloorTowel } from './floorCloth'
@@ -307,7 +309,7 @@ export function ballOf(pr: ClutterProp, at: THREE.Vector3) {
 export function buildClutter(scene: THREE.Scene, obstacles: { x: number; z: number; r: number }[]): Clutter {
   const r = rng(42)
   const props: ClutterProp[] = []
-  const rects = furnitureRects()
+  const rects = [...furnitureRects(), ...DINING_FOOTPRINTS, ...BEDROOM_FOOTPRINTS]
   const T = KITCHEN.trash
 
   const bin = trashCan(r)
@@ -367,12 +369,10 @@ export function buildClutter(scene: THREE.Scene, obstacles: { x: number; z: numb
     const pz = at('kitchen', -0.02, -1.3)
     place(takeawayBox(), pz.x, pz.z, 0.3, false)
   }
-  // Laundry: towels dropped beside the table, one halfway across the room.
+  // Laundry: a towel dropped past the dryer, one in front of the folding table, one halfway across the room.
   {
-    const a = at('laundry', 0.1, -1.05)
-    place(towel(r, '#a5b4fc', '#e0e7ff'), a.x, a.z, 1.1, false, 'towel')
-    const b = at('laundry', 0.55, -0.95)
-    place(towel(r, '#fca5a5', '#fee2e2'), b.x, b.z, -0.5, false, 'towel')
+    place(towel(r, '#a5b4fc', '#e0e7ff'), 2.75, -1.35, 1.1, false, 'towel')
+    place(towel(r, '#fca5a5', '#fee2e2'), -0.25, -0.85, -0.5, false, 'towel')
     place(towel(r, '#fde68a', '#fffbeb'), 0.75, -0.55, 2.0, false, 'towel')
   }
 

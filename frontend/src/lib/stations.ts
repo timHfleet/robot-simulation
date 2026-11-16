@@ -17,10 +17,12 @@ export interface Dock {
 }
 
 export const DOCKS: Record<StationId, Dock> = {
-  sort: { x: 1.3, z: 0, yaw: 0 },
+  // The sorting table is a desk against the bedroom wall (+z); the folding table, the washer
+  // and the dryer stand in one row along the laundry side (-z), all facing the room.
+  sort: { x: -0.4, z: 3.2, yaw: -Math.PI / 2 },
   kitchen: { x: -1.3, z: 0, yaw: Math.PI },
-  laundry: { x: 0, z: -1.3, yaw: Math.PI / 2 },
-  washer: { x: 0, z: 1.3, yaw: -Math.PI / 2 },
+  laundry: { x: 0, z: -1.7, yaw: Math.PI / 2 },
+  washer: { x: 1.55, z: -1.7, yaw: Math.PI / 2 },
 }
 /** Shoulder height used at each station. */
 export const LIFTS: Record<StationId, number> = { sort: 1.18, kitchen: 1.0, laundry: 1.05, washer: 1.15 }
@@ -180,8 +182,8 @@ export const LAUNDRY = {
   basket: { a0: 0.4, a1: 0.7, b0: -0.6, b1: -0.3, wall: 0.012, h: 0.11 },
   /** Where folded towels are stacked, on the right of the table. */
   stack: { a: 0.52, b: 0.38 },
-  /** Laundry hamper on the floor past the end of the table away from the kitchen (centre, radius, rim height). */
-  hamper: { a: 0.6, b: 1.05, r: 0.23, h: 0.48 },
+  /** Laundry hamper on the floor past the end of the table toward the kitchen (centre, radius, rim height). */
+  hamper: { a: 0.55, b: -1.05, r: 0.23, h: 0.48 },
   /** Folds in order: left side, right side, then bottom half up. */
   folds: [
     { point: [0, 0.746, -0.08], n: [0, 0, -1], pinch: [0.55, -0.26] },
@@ -290,6 +292,8 @@ export const WASHER = {
   drum: { a: 0.64, r: 0.16, y0: 0.46, y1: 0.86 },
   button: { a: 0.46, y: 0.885, b: 0.18 },
   stand: { a0: 0.4, a1: 0.64, b0: -0.68, b1: -0.36, top: 0.76 },
+  /** Front-loading dryer to the right of the washer: body, round door on its front, controls on top. */
+  dryer: { a0: 0.42, a1: 0.92, b0: 0.36, b1: 0.96, top: 0.88, doorY: 0.47, doorR: 0.17 },
   basketWall: 0.13,
   clothes: [
     { a: 0.47, b: -0.45, color: '#2563eb' },
@@ -394,6 +398,7 @@ export const FURNITURE: Record<StationId, Box[]> = {
   washer: [
     { ...WASHER.body, y0: 0, y1: WASHER.body.top },
     { ...WASHER.stand, y0: 0, y1: WASHER.stand.top },
+    { a0: WASHER.dryer.a0, a1: WASHER.dryer.a1, b0: WASHER.dryer.b0, b1: WASHER.dryer.b1, y0: 0, y1: WASHER.dryer.top },
   ],
 }
 
@@ -442,6 +447,7 @@ export const KEEP_OUT: Record<StationId, { a0: number; a1: number; b0: number; b
   washer: [
     { a0: WASHER.stand.a0, a1: WASHER.stand.a1, b0: WASHER.stand.b0, b1: WASHER.stand.b1, y: WASHER.stand.top + WASHER.basketWall + 0.008, hand: false },
     { a0: WASHER.body.a0, a1: WASHER.body.a1, b0: WASHER.body.b0, b1: WASHER.body.b1, y: WASHER.body.top, hand: false },
+    { a0: WASHER.dryer.a0, a1: WASHER.dryer.a1, b0: WASHER.dryer.b0, b1: WASHER.dryer.b1, y: WASHER.dryer.top, hand: true },
   ],
   kitchen: KITCHEN.counters.map((c) => ({ a0: c.a0, a1: c.a1, b0: c.b0, b1: c.b1, y: KITCHEN.counterH, hand: false })),
 }

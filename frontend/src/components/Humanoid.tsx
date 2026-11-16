@@ -34,6 +34,7 @@ import { handPath, keepOutsAll, keepOutsFor, keepOutsRound, pathSteps, toRobotGo
 import { TASKS, planTask, type Act, type Mechanism, type PlanCtx, type TaskId } from '../lib/tasks'
 import { ballOf, buildClutter, type Clutter } from './clutter'
 import { DINING_FOOTPRINTS, buildDining } from './dining'
+import { BEDROOM_FOOTPRINTS, buildBedroom } from './bedroom'
 import { FloorGrid, planPath, pathLength, type Disc, type Pt } from '../lib/pathPlan'
 import { buildStations, type Mech, type Stations } from './stationProps'
 import type { Physics, PhysicsStats } from './physicsWorld'
@@ -81,7 +82,7 @@ type Obstacle =
   | { kind: 'barrel'; x: number; z: number; r: number; h: number; color: string }
 
 const OBSTACLES: Obstacle[] = [
-  { kind: 'crate', x: 3.6, z: 2.4, w: 0.7, d: 0.7, h: 0.7, color: '#b45309' },
+  { kind: 'crate', x: 4.4, z: 3.9, w: 0.7, d: 0.7, h: 0.7, color: '#b45309' },
   { kind: 'crate', x: -3.4, z: -3.0, w: 0.9, d: 0.5, h: 0.6, color: '#92400e' },
   { kind: 'crate', x: 3.2, z: -3.4, w: 0.5, d: 0.5, h: 0.45, color: '#a16207' },
   { kind: 'barrel', x: 3.6, z: -2.3, r: 0.22, h: 0.6, color: '#16a34a' },
@@ -89,7 +90,7 @@ const OBSTACLES: Obstacle[] = [
   { kind: 'barrel', x: -3.0, z: 3.4, r: 0.2, h: 0.55, color: '#dc2626' },
 ]
 /** Furniture the base must keep clear of: the stations', plus the dining table and chairs. */
-const FURNITURE_RECTS = [...furnitureRects(), ...DINING_FOOTPRINTS]
+const FURNITURE_RECTS = [...furnitureRects(), ...DINING_FOOTPRINTS, ...BEDROOM_FOOTPRINTS]
 /** How far the base's corners reach from its centre: the clearance it needs to turn on the spot. */
 const TURN_R = 0.47 // 0.44 to the corners, plus slack for the 5 cm grid
 /** The dishwasher door lying open (with the racks out over it): kitchen a -0.30..0.42, |b| < 0.29. */
@@ -782,8 +783,9 @@ function buildWorld(el: HTMLDivElement): World {
     OBSTACLES.map((o) => ({ x: o.x, z: o.z, r: o.kind === 'crate' ? Math.hypot(o.w, o.d) / 2 : o.r })),
   )
   buildDining(scene)
-  // The table and chairs are solid for loose things too (as their footprints).
-  for (const f of DINING_FOOTPRINTS) clutter.statics.push({ kind: 'box', x: (f.x0 + f.x1) / 2, z: (f.z0 + f.z1) / 2, w: f.x1 - f.x0, d: f.z1 - f.z0, h: f.h })
+  buildBedroom(scene)
+  // The dining set and the bedroom furniture are solid for loose things too (as their footprints).
+  for (const f of [...DINING_FOOTPRINTS, ...BEDROOM_FOOTPRINTS]) clutter.statics.push({ kind: 'box', x: (f.x0 + f.x1) / 2, z: (f.z0 + f.z1) / 2, w: f.x1 - f.x0, d: f.z1 - f.z0, h: f.h })
   // Crates and barrels are solid for the litter too.
   for (const o of OBSTACLES)
     clutter.statics.push(o.kind === 'crate' ? { kind: 'box', x: o.x, z: o.z, w: o.w, d: o.d, h: o.h } : { kind: 'cyl', x: o.x, z: o.z, r: o.r, h: o.h })

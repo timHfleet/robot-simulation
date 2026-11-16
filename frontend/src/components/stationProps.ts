@@ -765,7 +765,61 @@ function buildWasher(g: THREE.Group, pick: THREE.Object3D[]): WasherParts {
     slab(s.a0 + 0.015, s.a0 + 0.033, bt - 0.004, bt + 0.008, s.b0 + 0.015, s.b1 - 0.015, rimMat, 0.005),
     slab(s.a1 - 0.033, s.a1 - 0.015, bt - 0.004, bt + 0.008, s.b0 + 0.015, s.b1 - 0.015, rimMat, 0.005),
   )
+  buildDryer(g, pick)
   return { lid, drum, led, display }
+}
+
+/** Front-loading dryer beside the washer: white cabinet, porthole door, a control panel along the top. */
+function buildDryer(g: THREE.Group, pick: THREE.Object3D[]) {
+  const D = WASHER.dryer
+  const white = mat('#f8fafc', { roughness: 0.35 })
+  const cy = (D.b0 + D.b1) / 2
+  const body = new THREE.Mesh(new RoundedBoxGeometry(D.a1 - D.a0, D.top - 0.03, D.b1 - D.b0, 3, 0.012), white)
+  body.position.set((D.a0 + D.a1) / 2, 0.03 + (D.top - 0.03) / 2, cy)
+  g.add(shadowed(body))
+  pick.push(body)
+  // Recessed plinth and feet.
+  g.add(slab(D.a0 + 0.03, D.a1 - 0.02, 0, 0.03, D.b0 + 0.03, D.b1 - 0.03, M.black))
+  // Control panel: a dark glass strip across the top of the front, a dial, a display and two buttons.
+  const panelY0 = D.top - 0.12
+  g.add(slab(D.a0 - 0.004, D.a0 + 0.002, panelY0, D.top - 0.02, D.b0 + 0.02, D.b1 - 0.02, mat('#1f2933', { roughness: 0.15, metalness: 0.2 })))
+  const dial = new THREE.Mesh(new THREE.CylinderGeometry(0.032, 0.034, 0.022, 32), M.steel)
+  dial.rotation.z = Math.PI / 2
+  dial.position.set(D.a0 - 0.014, panelY0 + 0.05, cy + 0.12)
+  const notch = slab(D.a0 - 0.027, D.a0 - 0.024, panelY0 + 0.06, panelY0 + 0.078, cy + 0.117, cy + 0.123, M.black)
+  const display = new THREE.Mesh(new THREE.BoxGeometry(0.004, 0.035, 0.11), new THREE.MeshStandardMaterial({ color: '#0b1220', emissive: '#38bdf8', emissiveIntensity: 0.35 }))
+  display.position.set(D.a0 - 0.006, panelY0 + 0.05, cy - 0.06)
+  g.add(shadowed(dial), notch, display)
+  for (const db of [-0.19, -0.155]) {
+    const btn = new THREE.Mesh(new THREE.CylinderGeometry(0.009, 0.009, 0.008, 16), mat('#e5e7eb'))
+    btn.rotation.z = Math.PI / 2
+    btn.position.set(D.a0 - 0.007, panelY0 + 0.05, cy + db)
+    g.add(btn)
+  }
+  // Porthole door: a chrome ring with a smoked glass bowl, hinged on the left, with a recessed grip.
+  const door = new THREE.Group()
+  door.position.set(D.a0, D.doorY, cy)
+  const ring = new THREE.Mesh(new THREE.TorusGeometry(D.doorR, 0.022, 16, 56), mat('#d7dce2', { metalness: 0.9, roughness: 0.2 }))
+  ring.rotation.y = Math.PI / 2
+  ring.position.x = -0.022
+  const rim = new THREE.Mesh(new THREE.CylinderGeometry(D.doorR + 0.03, D.doorR + 0.03, 0.012, 56), mat('#e2e8f0', { roughness: 0.3 }))
+  rim.rotation.z = Math.PI / 2
+  rim.position.x = -0.006
+  const glass = new THREE.Mesh(
+    new THREE.SphereGeometry(D.doorR * 1.25, 40, 16, 0, Math.PI * 2, 0, 0.72),
+    new THREE.MeshPhysicalMaterial({ color: '#3b4654', transparent: true, opacity: 0.55, roughness: 0.05, metalness: 0.1 }),
+  )
+  glass.rotation.z = Math.PI / 2
+  glass.position.x = -0.022 + D.doorR * 1.25 * Math.cos(0.72)
+  const grip = slab(-0.035, -0.02, -0.05, 0.05, -D.doorR - 0.012, -D.doorR + 0.008, mat('#cbd5e1', { metalness: 0.7, roughness: 0.3 }))
+  door.add(rim, shadowed(ring), glass, grip)
+  // Dark drum behind the glass.
+  const inside = new THREE.Mesh(new THREE.CircleGeometry(D.doorR - 0.01, 40), mat('#2a3038', { metalness: 0.6, roughness: 0.4 }))
+  inside.rotation.y = -Math.PI / 2
+  inside.position.set(D.a0 - 0.0015, D.doorY, cy)
+  g.add(door, inside)
+  // Lint filter slot on top, near the front.
+  g.add(slab(D.a0 + 0.14, D.a0 + 0.18, D.top - 0.003, D.top + 0.002, cy - 0.12, cy + 0.12, mat('#cbd5e1', { roughness: 0.5 })))
 }
 
 export function buildStations(scene: THREE.Scene): Stations {

@@ -161,6 +161,9 @@ function staticBoxes(): Box[] {
     slabW('washer', s.a0 + 0.02, s.a1 - 0.02, s.top, bt, s.b0 + 0.02, s.b0 + 0.03),
     slabW('washer', s.a0 + 0.02, s.a1 - 0.02, s.top, bt, s.b1 - 0.03, s.b1 - 0.02),
   )
+  // The dryer beside it: one solid box.
+  const dr = W.dryer
+  out.push(slabW('washer', dr.a0, dr.a1, 0, dr.top, dr.b0, dr.b1))
   return out
 }
 
