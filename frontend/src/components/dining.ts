@@ -236,40 +236,7 @@ export function buildDining(scene: THREE.Scene) {
   runner.position.set(x, h + 0.0015, z)
   runner.receiveShadow = true
   root.add(runner)
-  const bowlProfile = [
-    [0, 0], [0.05, 0], [0.09, 0.02], [0.12, 0.06], [0.125, 0.065], [0.118, 0.065], [0.085, 0.025], [0, 0.012],
-  ].map(([a, b]) => new THREE.Vector2(a, b))
-  const bowl = new THREE.Mesh(new THREE.LatheGeometry(bowlProfile, 40), new THREE.MeshPhysicalMaterial({ color: '#f1efe8', roughness: 0.25, clearcoat: 0.6, side: THREE.DoubleSide }))
-  bowl.position.set(x, h, z - 0.3)
-  root.add(shadowed(bowl))
-  const fruit: [string, number, number, number][] = [
-    ['#c0392b', 0.04, -0.03, 0.02], ['#e67e22', 0.042, 0.04, -0.01], ['#27ae60', 0.038, 0.0, 0.05], ['#f1c40f', 0.035, -0.045, -0.045], ['#c0392b', 0.038, 0.05, 0.05],
-  ]
-  for (const [c, r, dx, dz] of fruit) {
-    const f = new THREE.Mesh(new THREE.SphereGeometry(r, 20, 14), mat(c, { roughness: 0.35 }))
-    f.position.set(x + dx, h + 0.03 + r * 0.8, z - 0.3 + dz)
-    root.add(shadowed(f))
-  }
-  const vase = new THREE.Mesh(
-    new THREE.LatheGeometry([[0, 0], [0.045, 0], [0.05, 0.05], [0.035, 0.16], [0.03, 0.2], [0.034, 0.21], [0, 0.21]].map(([a, b]) => new THREE.Vector2(a, b)), 30),
-    new THREE.MeshPhysicalMaterial({ color: '#cfe3ea', roughness: 0.05, transparent: true, opacity: 0.55, clearcoat: 1 }),
-  )
-  vase.position.set(x, h, z + 0.32)
-  root.add(vase)
-  const stemM = mat('#3f6b35', { roughness: 0.7 })
-  const petals = ['#f5f0e1', '#e8a2b0', '#f7d36b']
-  for (let i = 0; i < 7; i++) {
-    const a = (i / 7) * Math.PI * 2
-    const lean = 0.18 + (i % 3) * 0.06
-    const len = 0.3 + (i % 2) * 0.06
-    const stem = new THREE.Mesh(new THREE.CylinderGeometry(0.003, 0.003, len, 5), stemM)
-    stem.position.set(x + Math.cos(a) * lean * len * 0.5, h + 0.12 + len / 2, z + 0.32 + Math.sin(a) * lean * len * 0.5)
-    stem.rotation.set(Math.sin(a) * lean, 0, -Math.cos(a) * lean)
-    root.add(stem)
-    const bloom = new THREE.Mesh(new THREE.IcosahedronGeometry(0.03, 1), mat(petals[i % 3], { roughness: 0.8, flatShading: true }))
-    bloom.position.set(x + Math.cos(a) * lean * len, h + 0.12 + len, z + 0.32 + Math.sin(a) * lean * len)
-    root.add(shadowed(bloom))
-  }
+  // (The fruit bowl and the vase of flowers are loose items: clutter.ts.)
 
   // Pendant lamp over the table: a cord from the ceiling, a dark metal shade, a warm bulb,
   // and a light that pools on the table.
@@ -287,41 +254,8 @@ export function buildDining(scene: THREE.Scene) {
   light.target.position.set(x, 0, z)
   root.add(cord, shadowed(shade), inside, bulb, light, light.target)
 
-  // After dinner: a crumpled napkin at each place, crumbs round the plates, a drip of sauce.
+  // After dinner: a drip of sauce on the table (the napkins and crumbs are loose items: clutter.ts).
   {
-    let seed = 11
-    const rnd = () => ((seed = (seed * 16807) % 2147483647) / 2147483647)
-    const linen = mat('#efe9dc', { roughness: 1 })
-    const crumbMat = mat('#c49a62', { roughness: 0.9 })
-    for (const p of PLACES) {
-      const rx = -p.fz
-      const rz = p.fx
-      // A sphere crumpled by a smooth noise of position (shared vertices move together, no cracks).
-      const geo = new THREE.SphereGeometry(1, 18, 12)
-      const pos = geo.attributes.position
-      const ph = rnd() * 10
-      for (let i = 0; i < pos.count; i++) {
-        const x = pos.getX(i)
-        const y = pos.getY(i)
-        const z = pos.getZ(i)
-        const k = 0.82 + 0.16 * Math.sin(5.3 * x + ph) * Math.cos(4.1 * y - ph) + 0.1 * Math.sin(7.7 * z + 2 * ph) * Math.sin(6.2 * x)
-        pos.setXYZ(i, x * k, Math.max(y * k, -0.55), z * k)
-      }
-      geo.computeVertexNormals()
-      const napkin = new THREE.Mesh(geo, linen)
-      napkin.scale.set(0.075, 0.035, 0.06)
-      napkin.rotation.y = rnd() * Math.PI
-      napkin.position.set(p.x - rx * 0.25 - p.fx * 0.04, h + 0.025, p.z - rz * 0.25 - p.fz * 0.04)
-      root.add(shadowed(napkin))
-      for (let i = 0; i < 9; i++) {
-        const a = rnd() * Math.PI * 2
-        const d = 0.15 + rnd() * 0.08
-        const c = new THREE.Mesh(new THREE.BoxGeometry(0.006 + rnd() * 0.006, 0.004, 0.006 + rnd() * 0.005), crumbMat)
-        c.position.set(p.x + Math.cos(a) * d, h + 0.002, p.z + Math.sin(a) * d)
-        c.rotation.y = rnd() * 3
-        root.add(c)
-      }
-    }
     const drip = new THREE.Mesh(new THREE.CircleGeometry(0.022, 20), new THREE.MeshStandardMaterial({ color: '#7a2a14', roughness: 0.3, transparent: true, opacity: 0.8 }))
     drip.rotation.x = -Math.PI / 2
     drip.scale.set(1.4, 0.8, 1)

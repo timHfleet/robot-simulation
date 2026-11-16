@@ -397,6 +397,24 @@ export async function createPhysics(scene: THREE.Scene, stations: Stations, rig:
       // real ones are dented, labelled and squashed, so give round pieces rolling resistance.
       const roll = sh.kind === 'box' ? 0.6 : 4
       const body = world.createRigidBody(R.RigidBodyDesc.dynamic().setTranslation(p.x, p.y, p.z).setRotation(q).setLinearDamping(0.4).setAngularDamping(roll))
+      if (sh.kind === 'bowl') {
+        // A base and a ring of 14 staves leaning out like the bowl's sides.
+        const parts: RAPIER.ColliderDesc[] = [R.ColliderDesc.cylinder(0.006, sh.r * 0.45).setTranslation(0, 0.006, 0)]
+        const n = 14
+        const lean = Math.atan2(sh.r * 0.55, sh.h)
+        const len = Math.hypot(sh.r * 0.55, sh.h)
+        const w = 2 * sh.r * 0.75 * Math.tan(Math.PI / n) + 0.006
+        for (let k = 0; k < n; k++) {
+          const a = (k / n) * Math.PI * 2
+          const q = new THREE.Quaternion().setFromAxisAngle(v(0, 1, 0), -a).multiply(new THREE.Quaternion().setFromAxisAngle(v(0, 0, 1), -lean))
+          const rr = sh.r * 0.45 + (sh.r * 0.55) / 2
+          parts.push(R.ColliderDesc.cuboid(0.005, len / 2, w / 2).setTranslation(Math.cos(a) * rr, sh.h / 2, Math.sin(a) * rr).setRotation(q))
+        }
+        const cols = parts.map((c) => world.createCollider(c.setDensity(pr.density).setFriction(pr.friction).setRestitution(0.1).setCollisionGroups(G_ITEM), body))
+        items.set(pr.id, { body, collider: cols[0], obj: pr.obj })
+        loose.push({ obj: pr.obj, p, q })
+        continue
+      }
       const d =
         sh.kind === 'ball'
           ? R.ColliderDesc.ball(sh.r)

@@ -1335,6 +1335,8 @@ export default function Humanoid() {
       const out: Disc[] = []
       for (const pr of w.clutter.props) {
         if (except.includes(pr.id)) continue
+        // Crumbs, napkins and fruit knocked off the table don't block the way: the base just pushes them aside.
+        if (pr.kind === 'decor') continue
         const where = S.where.get(pr.id) ?? 'floor'
         if (where !== 'floor') continue
         const tw = w.clutter.towels.get(pr.id)
@@ -1347,7 +1349,7 @@ export default function Humanoid() {
         const p = phys.state(pr.id).pos
         if (p.y > 0.25) continue
         const sh = pr.shape
-        const r = sh.kind === 'ball' ? sh.r : sh.kind === 'cyl' ? Math.max(sh.r, sh.h / 2) : Math.hypot(sh.hx, sh.hz)
+        const r = sh.kind === 'ball' ? sh.r : sh.kind === 'cyl' ? Math.max(sh.r, sh.h / 2) : sh.kind === 'bowl' ? sh.r : Math.hypot(sh.hx, sh.hz)
         out.push({ x: p.x, z: p.z, r })
       }
       return out

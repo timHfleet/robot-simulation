@@ -22,8 +22,11 @@ export type PropShape =
   /** `flat`: lies on its face (a plate): a true cylinder, not the faceted prism used for rolling things. */
   | { kind: 'cyl'; r: number; h: number; flat?: boolean }
   | { kind: 'box'; hx: number; hy: number; hz: number; y?: number }
+  /** An open bowl standing on its foot (origin at the bottom): a base and a ring of sloping walls, so what's in it stays in. */
+  | { kind: 'bowl'; r: number; h: number }
 
-export type ClutterKind = 'trash' | 'towel' | 'mug' | 'dinnerplate' | 'cutlery' | 'glass'
+/** `decor`: the rest of what's on the dining table (napkins, crumbs, the fruit bowl and its fruit, the vase): loose, but no task's business. */
+export type ClutterKind = 'trash' | 'towel' | 'mug' | 'dinnerplate' | 'cutlery' | 'glass' | 'decor'
 export interface ClutterProp {
   id: string
   kind: ClutterKind
@@ -264,6 +267,84 @@ function tumbler(water = 0.04): Loose {
   return { obj: g, shape: { kind: 'cyl', r: 0.038, h: 0.1 }, density: 600, friction: 0.5 }
 }
 
+/** A ceramic fruit bowl, origin under its foot. */
+function fruitBowl(): Loose {
+  const profile = [
+    [0, 0], [0.05, 0], [0.09, 0.02], [0.12, 0.06], [0.125, 0.065], [0.118, 0.065], [0.085, 0.025], [0, 0.012],
+  ].map(([a, b]) => new THREE.Vector2(a, b))
+  const m = new THREE.Mesh(new THREE.LatheGeometry(profile, 40), new THREE.MeshPhysicalMaterial({ color: '#f1efe8', roughness: 0.25, clearcoat: 0.6, side: THREE.DoubleSide }))
+  return { obj: shadowed(m), shape: { kind: 'bowl', r: 0.125, h: 0.065 }, density: 1600, friction: 0.6 }
+}
+
+/** A piece of fruit (centre origin). */
+function fruitPiece(color: string, r: number): Loose {
+  const m = new THREE.Mesh(new THREE.SphereGeometry(r, 20, 14), mat(color, { roughness: 0.35 }))
+  return { obj: shadowed(m), shape: { kind: 'ball', r }, density: 850, friction: 0.7 }
+}
+
+/** A glass vase with a few flowers in it (centre origin, the flowers riding along). */
+function vaseOfFlowers(): Loose {
+  const H = 0.21
+  const g = new THREE.Group()
+  const vase = new THREE.Mesh(
+    new THREE.LatheGeometry([[0, 0], [0.045, 0], [0.05, 0.05], [0.035, 0.16], [0.03, 0.2], [0.034, H], [0, H]].map(([a, b]) => new THREE.Vector2(a, b)), 30),
+    new THREE.MeshPhysicalMaterial({ color: '#cfe3ea', roughness: 0.05, transparent: true, opacity: 0.55, clearcoat: 1 }),
+  )
+  vase.position.y = -H / 2
+  g.add(vase)
+  const stemM = mat('#3f6b35', { roughness: 0.7 })
+  const petals = ['#f5f0e1', '#e8a2b0', '#f7d36b']
+  for (let i = 0; i < 7; i++) {
+    const a = (i / 7) * Math.PI * 2
+    const lean = 0.18 + (i % 3) * 0.06
+    const len = 0.3 + (i % 2) * 0.06
+    const stem = new THREE.Mesh(new THREE.CylinderGeometry(0.003, 0.003, len, 5), stemM)
+    stem.position.set(Math.cos(a) * lean * len * 0.5, 0.12 - H / 2 + len / 2, Math.sin(a) * lean * len * 0.5)
+    stem.rotation.set(Math.sin(a) * lean, 0, -Math.cos(a) * lean)
+    g.add(stem)
+    const bloom = new THREE.Mesh(new THREE.IcosahedronGeometry(0.03, 1), mat(petals[i % 3], { roughness: 0.8, flatShading: true }))
+    bloom.position.set(Math.cos(a) * lean * len, 0.12 - H / 2 + len, Math.sin(a) * lean * len)
+    g.add(bloom)
+  }
+  // Glass with water in it, heavy at the bottom.
+  return { obj: shadowed(g), shape: { kind: 'cyl', r: 0.047, h: H }, density: 700, friction: 0.5 }
+}
+
+/** A used napkin, crumpled (origin on the table under it). */
+function napkin(seed: number): Loose {
+  let s = seed
+  const rnd = () => ((s = (s * 16807) % 2147483647) / 2147483647)
+  // A sphere crumpled by a smooth noise of position (shared vertices move together, no cracks).
+  const geo = new THREE.SphereGeometry(1, 18, 12)
+  const pos = geo.attributes.position
+  const ph = rnd() * 10
+  for (let i = 0; i < pos.count; i++) {
+    const x = pos.getX(i)
+    const y = pos.getY(i)
+    const z = pos.getZ(i)
+    const k = 0.82 + 0.16 * Math.sin(5.3 * x + ph) * Math.cos(4.1 * y - ph) + 0.1 * Math.sin(7.7 * z + 2 * ph) * Math.sin(6.2 * x)
+    pos.setXYZ(i, x * k, Math.max(y * k, -0.55), z * k)
+  }
+  geo.computeVertexNormals()
+  const m = new THREE.Mesh(geo, mat('#efe9dc', { roughness: 1 }))
+  m.scale.set(0.075, 0.035, 0.06)
+  m.position.y = 0.019
+  const g = new THREE.Group()
+  g.add(m)
+  return { obj: shadowed(g), shape: { kind: 'box', hx: 0.065, hy: 0.02, hz: 0.05, y: 0.02 }, density: 90, friction: 1 }
+}
+
+/** A crumb (origin on the table under it). */
+function crumb(rnd: () => number): Loose {
+  const w = 0.006 + rnd() * 0.006
+  const d = 0.006 + rnd() * 0.005
+  const m = new THREE.Mesh(new THREE.BoxGeometry(w, 0.004, d), mat('#c49a62', { roughness: 0.9 }))
+  m.position.y = 0.002
+  const g = new THREE.Group()
+  g.add(m)
+  return { obj: g, shape: { kind: 'box', hx: w / 2, hy: 0.002, hz: d / 2, y: 0.002 }, density: 400, friction: 0.9 }
+}
+
 /** Cutlery lies flat, its length along local x (the head at +x), origin on the table under its middle. */
 function cutlery(kind: 'fork' | 'knife' | 'spoon'): Loose {
   const g = new THREE.Group()
@@ -414,7 +495,7 @@ function hamper() {
 /** A loose piece as a sphere round where it is (for the cloth to drape over). */
 export function ballOf(pr: ClutterProp, at: THREE.Vector3) {
   const sh = pr.shape
-  const r = sh.kind === 'ball' ? sh.r : sh.kind === 'cyl' ? Math.max(sh.r, sh.h / 2) + 0.01 : Math.max(sh.hx, sh.hz) * 0.8
+  const r = sh.kind === 'ball' ? sh.r : sh.kind === 'cyl' ? Math.max(sh.r, sh.h / 2) + 0.01 : sh.kind === 'bowl' ? sh.r : Math.max(sh.hx, sh.hz) * 0.8
   return { x: at.x, y: at.y, z: at.z, r }
 }
 
@@ -433,7 +514,7 @@ export function buildClutter(scene: THREE.Scene, obstacles: { x: number; z: numb
     { kind: 'tub', x: bin.pos.x, z: bin.pos.z, r: T.r, h: T.h },
     { kind: 'tub', x: hp.pos.x, z: hp.pos.z, r: H.r, h: H.h },
   ]
-  const count: Record<ClutterKind, number> = { trash: 0, towel: 0, mug: 0, dinnerplate: 0, cutlery: 0, glass: 0 }
+  const count: Record<ClutterKind, number> = { trash: 0, towel: 0, mug: 0, dinnerplate: 0, cutlery: 0, glass: 0, decor: 0 }
 
   /** Put a prop on the floor at (x, z), lying (axis level) or standing, turned by yaw. */
   const place = (loose: Loose, x: number, z: number, yaw: number, lying: boolean, kind: ClutterKind = 'trash') => {
@@ -521,6 +602,31 @@ export function buildClutter(scene: THREE.Scene, obstacles: { x: number; z: numb
       const gz = p.z + p.fz * (0.1 + (i % 3) * 0.02) + rz * (0.13 + (i % 2 ? 0.05 : -0.03))
       onTable(tumbler([0.012, 0.0, 0.025, 0.006][i]), 'glass', gx, gz, 0)
     })
+    // A crumpled napkin at each place, crumbs round the plates: loose, so they get pushed about.
+    {
+      let seed = 11
+      const rnd = () => ((seed = (seed * 16807) % 2147483647) / 2147483647)
+      PLACES.forEach((p, i) => {
+        const rx = -p.fz
+        const rz = p.fx
+        onTable(napkin(31 + i * 7), 'decor', p.x - rx * 0.25 - p.fx * 0.04, p.z - rz * 0.25 - p.fz * 0.04, rnd() * Math.PI)
+        for (let k = 0; k < 9; k++) {
+          const a = rnd() * Math.PI * 2
+          const d = 0.15 + rnd() * 0.08
+          onTable(crumb(rnd), 'decor', p.x + Math.cos(a) * d, p.z + Math.sin(a) * d, rnd() * 3)
+        }
+      })
+    }
+    // The centrepiece: a bowl of fruit and a vase of flowers, standing on the runner.
+    {
+      const runnerTop = 0.003
+      onTable(fruitBowl(), 'decor', DINING.x, DINING.z - 0.3, 0, runnerTop)
+      const fruit: [string, number, number, number][] = [
+        ['#c0392b', 0.04, -0.03, 0.02], ['#e67e22', 0.042, 0.04, -0.01], ['#27ae60', 0.038, 0.0, 0.05], ['#f1c40f', 0.035, -0.045, -0.045], ['#c0392b', 0.038, 0.05, 0.05],
+      ]
+      for (const [c, r, dx, dz] of fruit) onTable(fruitPiece(c, r), 'decor', DINING.x + dx, DINING.z - 0.3 + dz, 0, runnerTop + 0.03 + r * 0.8)
+      onTable(vaseOfFlowers(), 'decor', DINING.x, DINING.z + 0.32, 0, runnerTop)
+    }
   }
 
   // Litter all over the floor, kept out of furniture, obstacles, the docks and the robot's start.

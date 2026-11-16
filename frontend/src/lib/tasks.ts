@@ -1051,6 +1051,8 @@ function graspOf(shape: PropShape, kind: ClutterKind) {
       return shape.hy < 0.01
         ? { extent: Math.max(shape.hx, shape.hz), width: 0.006, y: (shape.y ?? 0) + 0.002 }
         : { extent: Math.max(shape.hx, shape.hz), width: 2 * Math.min(shape.hx, shape.hz), y: (shape.y ?? 0) }
+    case 'bowl':
+      return { extent: shape.r, width: 0.01, y: shape.h }
   }
 }
 
