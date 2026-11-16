@@ -12,9 +12,13 @@ import { RoundedBoxGeometry } from 'three/examples/jsm/geometries/RoundedBoxGeom
 import { woodTexture } from './textures'
 
 /** Table centre, its size (x across, z along the long side), and height. */
-export const DINING = { x: 2.0, z: 2.35, w: 0.95, l: 1.8, h: 0.76 }
+export const DINING = { x: 2.0, z: 2.2, w: 0.95, l: 1.8, h: 0.76 }
 
-/** Chairs: where each one stands and which way it faces (yaw: 0 faces +x). Seats tuck under the table edge. */
+/**
+ * Chairs: where each one stands and which way it faces (yaw: 0 faces +x). Dinner's over: the
+ * four along the sides are pushed back to the corners and turned out (people have just got
+ * up), which leaves room at each place for the robot; the two at the ends are tucked in.
+ */
 const CHAIR_W = 0.46
 const CHAIR_D = 0.5
 const SEAT_H = 0.46
@@ -22,11 +26,13 @@ const chairs: { x: number; z: number; yaw: number }[] = (() => {
   const { x, z, w, l } = DINING
   const side = w / 2 + CHAIR_D / 2 - 0.12
   const end = l / 2 + CHAIR_D / 2 - 0.1
+  void side
+  const out = w / 2 + 0.35
   return [
-    { x: x - side, z: z - 0.45, yaw: 0 },
-    { x: x - side, z: z + 0.48, yaw: 0.15 }, // turned a little, as if someone just got up
-    { x: x + side, z: z - 0.45, yaw: Math.PI },
-    { x: x + side, z: z + 0.45, yaw: Math.PI },
+    { x: x - out, z: z - 1.3, yaw: 0.5 },
+    { x: x - out - 0.03, z: z + 1.3, yaw: -0.45 },
+    { x: x + out, z: z - 1.3, yaw: Math.PI - 0.5 },
+    { x: x + out, z: z + 1.3, yaw: Math.PI + 0.55 },
     { x, z: z - end, yaw: -Math.PI / 2 }, // facing +z, toward the table
     { x, z: z + end, yaw: Math.PI / 2 },
   ]
@@ -76,15 +82,20 @@ export const DINING_STATICS: Footprint[] = DINING_FOOTPRINTS.map((f, i) => {
  * A place laid for each chair: where its plate goes (on the table, 17 cm in from the edge in
  * front of the chair) and which way the diner faces (fx, fz).
  */
-export const PLACES: { x: number; z: number; fx: number; fz: number }[] = chairs.map((c) => {
-  const yaw = Math.round(c.yaw / (Math.PI / 2)) * (Math.PI / 2) // the turned chair's place is laid square
-  const fx = Math.round(Math.cos(yaw))
-  const fz = Math.round(-Math.sin(yaw))
-  const inset = 0.17
-  return fx !== 0
-    ? { x: DINING.x - fx * (DINING.w / 2 - inset), z: c.z, fx, fz }
-    : { x: DINING.x, z: DINING.z - fz * (DINING.l / 2 - inset), fx, fz }
-})
+export const PLACES: { x: number; z: number; fx: number; fz: number }[] = [
+  // Dinner for four, two each side (the end seats weren't used).
+  { x: DINING.x - (DINING.w / 2 - 0.17), z: DINING.z - 0.45, fx: 1, fz: 0 },
+  { x: DINING.x - (DINING.w / 2 - 0.17), z: DINING.z + 0.45, fx: 1, fz: 0 },
+  { x: DINING.x + (DINING.w / 2 - 0.17), z: DINING.z - 0.45, fx: -1, fz: 0 },
+  { x: DINING.x + (DINING.w / 2 - 0.17), z: DINING.z + 0.45, fx: -1, fz: 0 },
+]
+
+/** Where the robot stands to work at each place: square to the table, its front at the edge. */
+export const BAYS = PLACES.map((p) => ({
+  x: DINING.x - p.fx * (DINING.w / 2 + 0.36),
+  z: p.z,
+  yaw: p.fx > 0 ? 0 : Math.PI,
+}))
 
 const mat = (color: string, extra: Partial<THREE.MeshStandardMaterialParameters> = {}) =>
   new THREE.MeshStandardMaterial({ color, roughness: 0.6, metalness: 0, ...extra })
@@ -275,6 +286,48 @@ export function buildDining(scene: THREE.Scene) {
   light.position.set(x, lampY - 0.05, z)
   light.target.position.set(x, 0, z)
   root.add(cord, shadowed(shade), inside, bulb, light, light.target)
+
+  // After dinner: a crumpled napkin at each place, crumbs round the plates, a drip of sauce.
+  {
+    let seed = 11
+    const rnd = () => ((seed = (seed * 16807) % 2147483647) / 2147483647)
+    const linen = mat('#efe9dc', { roughness: 1 })
+    const crumbMat = mat('#c49a62', { roughness: 0.9 })
+    for (const p of PLACES) {
+      const rx = -p.fz
+      const rz = p.fx
+      // A sphere crumpled by a smooth noise of position (shared vertices move together, no cracks).
+      const geo = new THREE.SphereGeometry(1, 18, 12)
+      const pos = geo.attributes.position
+      const ph = rnd() * 10
+      for (let i = 0; i < pos.count; i++) {
+        const x = pos.getX(i)
+        const y = pos.getY(i)
+        const z = pos.getZ(i)
+        const k = 0.82 + 0.16 * Math.sin(5.3 * x + ph) * Math.cos(4.1 * y - ph) + 0.1 * Math.sin(7.7 * z + 2 * ph) * Math.sin(6.2 * x)
+        pos.setXYZ(i, x * k, Math.max(y * k, -0.55), z * k)
+      }
+      geo.computeVertexNormals()
+      const napkin = new THREE.Mesh(geo, linen)
+      napkin.scale.set(0.075, 0.035, 0.06)
+      napkin.rotation.y = rnd() * Math.PI
+      napkin.position.set(p.x - rx * 0.25 - p.fx * 0.04, h + 0.025, p.z - rz * 0.25 - p.fz * 0.04)
+      root.add(shadowed(napkin))
+      for (let i = 0; i < 9; i++) {
+        const a = rnd() * Math.PI * 2
+        const d = 0.15 + rnd() * 0.08
+        const c = new THREE.Mesh(new THREE.BoxGeometry(0.006 + rnd() * 0.006, 0.004, 0.006 + rnd() * 0.005), crumbMat)
+        c.position.set(p.x + Math.cos(a) * d, h + 0.002, p.z + Math.sin(a) * d)
+        c.rotation.y = rnd() * 3
+        root.add(c)
+      }
+    }
+    const drip = new THREE.Mesh(new THREE.CircleGeometry(0.022, 20), new THREE.MeshStandardMaterial({ color: '#7a2a14', roughness: 0.3, transparent: true, opacity: 0.8 }))
+    drip.rotation.x = -Math.PI / 2
+    drip.scale.set(1.4, 0.8, 1)
+    drip.position.set(PLACES[2].x + 0.02, h + 0.001, PLACES[2].z + 0.17)
+    root.add(drip)
+  }
 
   scene.add(root)
   return root

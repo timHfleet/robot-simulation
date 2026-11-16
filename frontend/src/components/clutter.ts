@@ -8,7 +8,7 @@
  * physics engine makes it a dynamic body the hands can pick up. The bin and hamper are
  * hollow and fixed (and are furniture for the base's path and collision checks).
  */
-import { DINING, DINING_FOOTPRINTS, PLACES } from './dining'
+import { BAYS, DINING, DINING_FOOTPRINTS, PLACES } from './dining'
 import { BEDROOM_FOOTPRINTS } from './bedroom'
 import { DOORWAYS, HOUSE_FOOTPRINTS, LIVING_FOOTPRINTS, START } from './house'
 import * as THREE from 'three'
@@ -19,10 +19,11 @@ import { towelTextures, wickerTextures } from './textures'
 
 export type PropShape =
   | { kind: 'ball'; r: number }
-  | { kind: 'cyl'; r: number; h: number }
+  /** `flat`: lies on its face (a plate): a true cylinder, not the faceted prism used for rolling things. */
+  | { kind: 'cyl'; r: number; h: number; flat?: boolean }
   | { kind: 'box'; hx: number; hy: number; hz: number; y?: number }
 
-export type ClutterKind = 'trash' | 'towel' | 'mug' | 'tableware'
+export type ClutterKind = 'trash' | 'towel' | 'mug' | 'dinnerplate' | 'cutlery' | 'glass'
 export interface ClutterProp {
   id: string
   kind: ClutterKind
@@ -212,20 +213,54 @@ function dinnerPlate(): Loose {
   band.rotation.x = Math.PI / 2
   band.position.y = 0.0062
   g.add(band)
-  return { obj: shadowed(g), shape: { kind: 'cyl', r: R, h: 0.02 }, density: 900, friction: 0.5 }
+  return { obj: shadowed(g), shape: { kind: 'cyl', r: R, h: 0.02, flat: true }, density: 900, friction: 0.5 }
+}
+
+/** What's left on a plate after dinner: a smear of sauce, a few peas, rice, a crust (seeded per plate). */
+function leftovers(plate: THREE.Object3D, seed: number) {
+  let s = seed
+  const r = () => ((s = (s * 16807) % 2147483647) / 2147483647)
+  const top = -0.0035
+  const smear = new THREE.Mesh(new THREE.CircleGeometry(0.035, 24), new THREE.MeshStandardMaterial({ color: ['#8a3218', '#6b4a1e', '#9c5a18'][seed % 3], roughness: 0.35, transparent: true, opacity: 0.85 }))
+  smear.rotation.x = -Math.PI / 2
+  smear.scale.set(1.4 + r() * 0.6, 0.7 + r() * 0.4, 1)
+  smear.rotation.z = r() * 3
+  smear.position.set((r() - 0.5) * 0.06, top + 0.0007, (r() - 0.5) * 0.06)
+  plate.add(smear)
+  const pea = mat('#5f9c3a', { roughness: 0.5 })
+  for (let i = 0; i < 2 + Math.floor(r() * 4); i++) {
+    const m = new THREE.Mesh(new THREE.SphereGeometry(0.006, 10, 8), pea)
+    m.position.set((r() - 0.5) * 0.12, top + 0.006, (r() - 0.5) * 0.12)
+    plate.add(m)
+  }
+  const rice = mat('#f4f1e8', { roughness: 0.6 })
+  for (let i = 0; i < 12; i++) {
+    const m = new THREE.Mesh(new THREE.CapsuleGeometry(0.0015, 0.004, 2, 6), rice)
+    m.rotation.set(Math.PI / 2, r() * 3, 0)
+    m.position.set((r() - 0.5) * 0.1, top + 0.0016, (r() - 0.5) * 0.1)
+    plate.add(m)
+  }
+  if (r() < 0.6) {
+    const crust = new THREE.Mesh(new THREE.BoxGeometry(0.04, 0.012, 0.018), mat('#b07a3c', { roughness: 0.85 }))
+    crust.rotation.y = r() * 3
+    crust.position.set((r() - 0.5) * 0.08, top + 0.006, (r() - 0.5) * 0.08)
+    plate.add(crust)
+  }
 }
 
 /** A drinking glass (tumbler) with a heavy base, a little water in it. */
-function tumbler(): Loose {
+function tumbler(water = 0.04): Loose {
   const g = new THREE.Group()
   const pts = [
     [0, -0.05], [0.033, -0.05], [0.036, -0.045], [0.038, 0.05], [0.035, 0.05], [0.0335, -0.035], [0, -0.035],
   ].map(([x, y]) => new THREE.Vector2(x, y))
   const glass = new THREE.MeshPhysicalMaterial({ color: '#e8f1f5', roughness: 0.05, transparent: true, opacity: 0.35, clearcoat: 1, side: THREE.DoubleSide })
   g.add(new THREE.Mesh(new THREE.LatheGeometry(pts, 32), glass))
-  const water = new THREE.Mesh(new THREE.CylinderGeometry(0.033, 0.032, 0.04, 28), new THREE.MeshPhysicalMaterial({ color: '#cfe6f0', roughness: 0.1, transparent: true, opacity: 0.45 }))
-  water.position.y = -0.015
-  g.add(water)
+  if (water > 0.002) {
+    const wm = new THREE.Mesh(new THREE.CylinderGeometry(0.033, 0.032, water, 28), new THREE.MeshPhysicalMaterial({ color: '#cfe6f0', roughness: 0.1, transparent: true, opacity: 0.45 }))
+    wm.position.y = -0.035 + water / 2
+    g.add(wm)
+  }
   return { obj: g, shape: { kind: 'cyl', r: 0.038, h: 0.1 }, density: 600, friction: 0.5 }
 }
 
@@ -263,7 +298,7 @@ function cutlery(kind: 'fork' | 'knife' | 'spoon'): Loose {
     bowl.position.set(headX + headLen / 2, 0.009, 0)
     g.add(bowl)
   }
-  return { obj: shadowed(g), shape: { kind: 'box', hx: L / 2, hy: 0.004, hz: 0.012, y: 0.004 }, density: 2500, friction: 0.6 }
+  return { obj: shadowed(g), shape: { kind: 'box', hx: L / 2, hy: 0.004, hz: 0.012, y: 0.004 }, density: 1200, friction: 0.6 }
 }
 
 /**
@@ -398,7 +433,7 @@ export function buildClutter(scene: THREE.Scene, obstacles: { x: number; z: numb
     { kind: 'tub', x: bin.pos.x, z: bin.pos.z, r: T.r, h: T.h },
     { kind: 'tub', x: hp.pos.x, z: hp.pos.z, r: H.r, h: H.h },
   ]
-  const count: Record<ClutterKind, number> = { trash: 0, towel: 0, mug: 0, tableware: 0 }
+  const count: Record<ClutterKind, number> = { trash: 0, towel: 0, mug: 0, dinnerplate: 0, cutlery: 0, glass: 0 }
 
   /** Put a prop on the floor at (x, z), lying (axis level) or standing, turned by yaw. */
   const place = (loose: Loose, x: number, z: number, yaw: number, lying: boolean, kind: ClutterKind = 'trash') => {
@@ -434,7 +469,8 @@ export function buildClutter(scene: THREE.Scene, obstacles: { x: number; z: numb
     place(mug('#f8fafc'), m1.x, m1.z, 2.2, true, 'mug')
     const far = at('kitchen', 0.08, 1.36)
     place(mug('#1d4ed8'), far.x, far.z, 1.2, true, 'mug')
-    const t = at('kitchen', 0.16, -0.72)
+    // A dropped tea towel out on the kitchen floor (clear of where the robot works at the counter).
+    const t = at('kitchen', -0.75, -0.3)
     place(towel(r, '#e2e8f0', '#94a3b8'), t.x, t.z, 0.4, false, 'towel')
     // Missed shots around the bin.
     // Well short of the bin, out on the floor and a good 30 cm apart: clear of where the robot
@@ -454,29 +490,37 @@ export function buildClutter(scene: THREE.Scene, obstacles: { x: number; z: numb
     place(towel(r, '#fde68a', '#fffbeb'), -2.4, 2.0, 2.0, false, 'towel')
   }
 
-  // The dining table laid for six: at each place a plate, a glass up to the right, a fork on
-  // the left, a knife and a spoon on the right (all loose, like the rest).
+  // After dinner for four: at each place a plate with leftovers and the knife, fork and spoon
+  // laid across it (finished), and a half-drunk glass pushed about. All loose, like the rest.
   {
-    const onTable = (loose: Loose, x: number, z: number, yaw: number) => {
-      const pr: ClutterProp = { ...loose, kind: 'tableware', id: `tableware${count.tableware++}` }
+    const onTable = (loose: Loose, kind: ClutterKind, x: number, z: number, yaw: number, lift = 0) => {
+      const pr: ClutterProp = { ...loose, kind, id: `${kind}${count[kind]++}` }
       const o = pr.obj
       o.name = pr.id
       o.quaternion.setFromAxisAngle(new THREE.Vector3(0, 1, 0), yaw)
-      const s = pr.shape
-      o.position.set(x, DINING.h + (s.kind === 'cyl' ? s.h / 2 : 0) + 0.001, z)
+      const sh = pr.shape
+      o.position.set(x, DINING.h + lift + (sh.kind === 'cyl' ? sh.h / 2 : 0) + 0.001, z)
       scene.add(o)
       props.push(pr)
+      return pr
     }
-    for (const p of PLACES) {
+    const plateTop = 0.02
+    PLACES.forEach((p, i) => {
       const rx = -p.fz
       const rz = p.fx
-      const yaw = Math.atan2(-p.fz, p.fx) // cutlery heads point away from the diner
-      onTable(dinnerPlate(), p.x, p.z, 0)
-      onTable(tumbler(), p.x + p.fx * 0.13 + rx * 0.13, p.z + p.fz * 0.13 + rz * 0.13, 0)
-      onTable(cutlery('fork'), p.x - rx * 0.17, p.z - rz * 0.17, yaw)
-      onTable(cutlery('knife'), p.x + rx * 0.165, p.z + rz * 0.165, yaw)
-      onTable(cutlery('spoon'), p.x + rx * 0.205, p.z + rz * 0.205, yaw)
-    }
+      const plate = dinnerPlate()
+      leftovers(plate.obj, 7 + i * 13)
+      onTable(plate, 'dinnerplate', p.x, p.z, i)
+      // Knife, fork and spoon laid together on the left half of the plate, pointing away from
+      // the diner ("finished"), a little askew.
+      const yaw = Math.atan2(-p.fz, p.fx) + (i % 2 ? 0.12 : -0.1)
+      const items: ['fork' | 'knife' | 'spoon', number][] = [['fork', -0.02], ['knife', -0.045], ['spoon', -0.07]]
+      for (const [k, off] of items) onTable(cutlery(k), 'cutlery', p.x + rx * off, p.z + rz * off, yaw, plateTop + 0.002)
+      // The glass: moved from its place up to the right, more or less drunk.
+      const gx = p.x + p.fx * (0.1 + (i % 3) * 0.02) + rx * (0.13 + (i % 2 ? 0.05 : -0.03))
+      const gz = p.z + p.fz * (0.1 + (i % 3) * 0.02) + rz * (0.13 + (i % 2 ? 0.05 : -0.03))
+      onTable(tumbler([0.012, 0.0, 0.025, 0.006][i]), 'glass', gx, gz, 0)
+    })
   }
 
   // Litter all over the floor, kept out of furniture, obstacles, the docks and the robot's start.
@@ -484,6 +528,12 @@ export function buildClutter(scene: THREE.Scene, obstacles: { x: number; z: numb
   const clear = (x: number, z: number, pad: number) => {
     if (Math.hypot(x - START.x, z - START.z) < 0.6) return false
     for (const q of DOORWAYS) if (x > q.x0 && x < q.x1 && z > q.z0 && z < q.z1) return false
+    // Nor where the robot stands to clear the dining table, or works at the kitchen counter.
+    for (const b of BAYS) if (Math.hypot(x - b.x, z - b.z) < 0.7) return false
+    for (const k of [KITCHEN.dishPose, KITCHEN.stackPose]) {
+      const p = toWorld('kitchen', k.a, 0, k.b)
+      if (Math.hypot(x - p.x, z - p.z) < 0.75) return false
+    }
     // Well out from the walls: the arms can't reach down beside a tall wall.
     for (const q of HOUSE_FOOTPRINTS) if (x > q.x0 - 0.75 && x < q.x1 + 0.75 && z > q.z0 - 0.75 && z < q.z1 + 0.75) return false
     // Somewhere beside it the base can stand (clear of furniture and walls by its turning

@@ -5,6 +5,7 @@
  */
 import * as THREE from 'three'
 import type { ClutterKind, Container, PropShape } from '../components/clutter'
+import { BAYS, PLACES } from '../components/dining'
 import { fk, torsoBase, type Side } from './kinematics'
 import { rad } from './math'
 import {
@@ -25,12 +26,13 @@ import {
   type StationId,
 } from './stations'
 
-export type TaskId = 'sort' | 'dishes' | 'fold' | 'wash' | 'cleanup'
+export type TaskId = 'sort' | 'dishes' | 'fold' | 'wash' | 'cleanup' | 'table'
 export const TASKS: { id: TaskId; label: string; station: StationId; blurb: string }[] = [
   { id: 'sort', label: 'Sort blocks', station: 'sort', blurb: 'Pick each block and drop it in the bin of its colour, turning at the waist to reach across.' },
   { id: 'dishes', label: 'Load dishwasher', station: 'kitchen', blurb: 'Open the door, pull out the racks, load plates and cups, close up and start it.' },
   { id: 'fold', label: 'Fold towel', station: 'laundry', blurb: 'Take a towel from the basket, spread it flat by two corners, fold it in half twice and put it on the stack.' },
   { id: 'wash', label: 'Wash clothes', station: 'washer', blurb: 'Open the lid, move the clothes from the basket into the drum, close it and press start.' },
+  { id: 'table', label: 'Clear the table', station: 'kitchen', blurb: 'Collect the plates into one stack (the cutlery rides on them), carry it to the kitchen and set it down on the counter by the dishwasher.' },
   { id: 'cleanup', label: 'Clean up room', station: 'kitchen', blurb: 'Pick the rubbish off the floor into the bin, towels into the hamper and mugs into the dishwasher, steering round everything.' },
 ]
 
@@ -75,6 +77,9 @@ export type Act =
   | { k: 'clothSweep'; side: Side; on: boolean }
   | { k: 'clothPress'; side: Side; on: boolean }
   | { k: 'wait'; t: number }
+  /** Fix an item to another where it is now (a plate onto the stack, cutlery onto its plate), or loose it again. */
+  | { k: 'glue'; item: string; onto: string }
+  | { k: 'unglue'; item: string }
   /** Plan the next steps now, from what the scene looks like at this point in the task. */
   | { k: 'plan'; make: () => Act[] }
   | { k: 'clothFolded' }
@@ -102,6 +107,8 @@ export interface PlanCtx {
   held: () => Partial<Record<Side, string>>
   /** Where a hand's fingertips are now. */
   tcp: (side: Side) => THREE.Vector3
+  /** The direction a hand's fingers close along now (world). */
+  closeAxis: (side: Side) => THREE.Vector3
   bin: Container
   hamper: Container
 }
@@ -1327,6 +1334,199 @@ function planCleanup(ctx: PlanCtx): Act[] {
   return [{ k: 'say', text: 'Cleaning up the room' }, { k: 'move', arms: { L: TUCK_Q, R: TUCK_Q } }, { k: 'lift', h: CARRY_LIFT }, { k: 'plan', make: next }]
 }
 
+// ---------------------------------------------------------------------------
+// Clear the table: stack the plates (the cutlery rides on them) and carry the stack to the counter
+// ---------------------------------------------------------------------------
+/** Plate (dinner) radius and how far in from its edge the fingers take the rim. */
+const DPLATE_R = 0.13
+const RIM_IN = 0.125
+/** A stacked plate sits this far above the one under it (plate thickness and the cutlery between). */
+const STACK_STEP = 0.028
+
+function planTable(ctx: PlanCtx): Act[] {
+  const K = KITCHEN
+  const onTable = (id: string) => ctx.item(id).where === 'floor' && ctx.item(id).pos.y > 0.5
+  const plates = ctx.ids('dinnerplate').filter(onTable)
+  if (!plates.length) return []
+  // Which plate is at which place (nearest), and what cutlery lies on a plate.
+  const plateAt = (i: number) => {
+    const p = PLACES[i]
+    return plates.map((id) => ({ id, d: Math.hypot(ctx.item(id).pos.x - p.x, ctx.item(id).pos.z - p.z) })).sort((a, b) => a.d - b.d)[0]
+  }
+  const cutleryOn = (plate: string) => {
+    const c = ctx.item(plate).pos
+    return ctx
+      .ids('cutlery')
+      .filter((id) => ctx.item(id).where === 'floor')
+      .filter((id) => {
+        const p = ctx.item(id).pos
+        return Math.hypot(p.x - c.x, p.z - c.z) < DPLATE_R + 0.02 && p.y > c.y && p.y < c.y + 0.03
+      })
+  }
+  // The stack is built at the place nearest the kitchen (the first), the others brought to it.
+  const base = 0
+  const basePlate = plateAt(base)
+  const stack: string[] = [basePlate.id]
+  const order = [1, 3, 2].filter((i) => plateAt(i) && plateAt(i).d < 0.15 && plateAt(i).id !== basePlate.id)
+  const bayGoto = (i: number): Act => ({ k: 'goto', x: BAYS[i].x, z: BAYS[i].z, yaw: BAYS[i].yaw, what: 'the table' })
+  const frame = () => {
+    const r = ctx.robot()
+    return { f: new THREE.Vector3(Math.cos(r.yaw), 0, -Math.sin(r.yaw)), rt: new THREE.Vector3(Math.sin(r.yaw), 0, Math.cos(r.yaw)) }
+  }
+  /** Holding a flat plate (or the stack) in front, by the rim(s), while driving. */
+  const carryFlat = (side: Side): Target => ({
+    frame: 'torso',
+    // Close in: driving up to a counter, what's carried stays in front of its edge.
+    pos: new THREE.Vector3(0.25, -0.08, side === 'L' ? -RIM_IN : RIM_IN),
+    approach: new THREE.Vector3(0, -1, 0),
+    close: new THREE.Vector3(0, 0, 1),
+    keepWaist: true,
+  })
+
+  /** At a place: take the plate by its right-hand rim, the cutlery on it riding along. */
+  const pickPlate = (id: string): Act[] => {
+    const { f, rt } = frame()
+    const c = ctx.item(id).pos
+    const P = c.clone().addScaledVector(rt, RIM_IN)
+    P.y = c.y + 0.002
+    return [
+      { k: 'say', text: 'Picking up a plate (the cutlery stays on it)' },
+      { k: 'lift', h: 1.08 },
+      { k: 'grip', side: 'R', g: 0.75 },
+      { k: 'move', arms: { R: T(up(P, 0.12), DOWN, rt) } },
+      { k: 'move', arms: { R: T(P, DOWN, rt) }, slow: true },
+      { k: 'grip', side: 'R', g: gripFor(0.02) },
+      { k: 'grab', side: 'R', item: id },
+      ...cutleryOn(id).map((cid): Act => ({ k: 'glue', item: cid, onto: id })),
+      { k: 'move', arms: { R: T(up(P, 0.15).addScaledVector(f, -0.06), DOWN, rt) }, slow: true },
+      { k: 'move', arms: { R: carryFlat('R') } },
+    ]
+  }
+  /** Back at the stack: set the plate square on top, let go, and it becomes part of the stack. */
+  const putOnStack = (id: string): Act[] => {
+    const { rt } = frame()
+    const below = stack[stack.length - 1]
+    const centre = ctx.item(below).pos.clone().add(new THREE.Vector3(0, STACK_STEP + 0.004, 0))
+    const hand = centre.clone().add(ctx.tcp('R').sub(ctx.item(id).pos))
+    const c = ctx.closeAxis('R').setY(0).normalize()
+    stack.push(id)
+    return [
+      { k: 'say', text: `Onto the stack (${stack.length} plates)` },
+      { k: 'lift', h: 1.08 },
+      // Free to keep the hand's turn (see the stack, below). Measured again once over the stack
+      // (the waist may have turned getting there), then straight down: square on the one below.
+      { k: 'move', arms: { R: T(up(hand, 0.12), DOWN, c) } },
+      {
+        k: 'plan',
+        make: (): Act[] => {
+          const h2 = centre.clone().add(ctx.tcp('R').sub(ctx.item(id).pos))
+          return [
+            { k: 'move', arms: { R: T(up(h2, 0.04), DOWN, c) }, slow: true },
+            { k: 'move', arms: { R: T(h2, DOWN, c) }, slow: true },
+          ]
+        },
+      },
+      { k: 'grip', side: 'R', g: 0.7 },
+      { k: 'release', side: 'R', item: id, container: 'kitchen', pos: [0, 0, 0], yaw: 0, where: 'stack' },
+      { k: 'wait', t: 0.4 },
+      { k: 'glue', item: id, onto: below },
+      { k: 'move', arms: { R: T(up(hand, 0.14), DOWN) } },
+      { k: 'move', arms: { R: TUCK_Q } },
+    ]
+  }
+
+  // The first plate stays put as the bottom of the stack: its cutlery goes with it from the start.
+  const acts: Act[] = [
+    { k: 'say', text: 'Clearing the table' },
+    ...cutleryOn(basePlate.id).map((cid): Act => ({ k: 'glue', item: cid, onto: basePlate.id })),
+    tuckBoth(),
+    { k: 'lift', h: CARRY_LIFT },
+  ]
+  for (const i of order) {
+    const id = plateAt(i).id
+    acts.push(
+      bayGoto(i),
+      { k: 'plan', make: () => pickPlate(id) },
+      { k: 'lift', h: CARRY_LIFT },
+      bayGoto(base),
+      { k: 'plan', make: () => putOnStack(id) },
+    )
+  }
+  if (!order.length) acts.push(bayGoto(base))
+
+  // Lift the whole stack by the top plate's rim (everything under it is fixed to it) and carry it to the kitchen.
+  acts.push({
+    k: 'plan',
+    make: (): Act[] => {
+      const { f, rt } = frame()
+      const top = stack[stack.length - 1]
+      const c = ctx.item(top).pos
+      const P = c.clone().addScaledVector(rt, RIM_IN)
+      P.y = c.y + 0.002
+      return [
+        { k: 'say', text: `Taking the stack of ${stack.length} plates to the kitchen` },
+        { k: 'lift', h: 1.08 },
+        { k: 'grip', side: 'R', g: 0.75 },
+        { k: 'move', arms: { R: T(up(P, 0.12), DOWN, rt) } },
+        { k: 'move', arms: { R: T(P, DOWN, rt) }, slow: true },
+        { k: 'grip', side: 'R', g: gripFor(0.02) },
+        { k: 'grab', side: 'R', item: top },
+        { k: 'move', arms: { R: T(up(P, 0.15).addScaledVector(f, -0.06), DOWN, rt) }, slow: true },
+        { k: 'move', arms: { R: carryFlat('R') } },
+      ]
+    },
+  })
+  const sp = toWorld('kitchen', KITCHEN.stackPose.a, 0, KITCHEN.stackPose.b)
+  acts.push({ k: 'lift', h: CARRY_LIFT }, { k: 'goto', x: sp.x, z: sp.z, yaw: DOCKS.kitchen.yaw, what: 'the counter' })
+
+  // Set the stack down on the counter in front. The torso rises
+  // first: the hand (and the stack) is measured after that. (The left arm folds away only once
+  // the stack is down: folded against the chest it would hit the stack held in front.)
+  const { fwd, W } = kitchenFrame()
+  acts.push({ k: 'say', text: 'Stack down on the counter' }, { k: 'lift', h: 1.12 })
+  acts.push({
+    k: 'plan',
+    make: (): Act[] => {
+      const bottom = ctx.item(stack[0]).pos
+      const top = stack[stack.length - 1]
+      const S = W(K.stackAt.a, K.counterH + 0.01 + 0.004, K.stackAt.b)
+      const hand = S.clone().add(ctx.tcp('R').sub(bottom))
+      // Hold the hand's turn as it is (fingers down): turning it would swing the stack round the
+      // hand, and it wouldn't land where measured.
+      const c = ctx.closeAxis('R').setY(0).normalize()
+      return [
+        // High over the drying rack and the mugs at the front of the counter, then down at the back.
+        { k: 'move', arms: { R: T(up(hand, 0.32).addScaledVector(fwd, -0.3), DOWN, c) } },
+        { k: 'move', arms: { R: T(up(hand, 0.32), DOWN, c) } },
+        // Measured again over the spot (the waist may have turned on the way), then straight down.
+        {
+          k: 'plan',
+          make: (): Act[] => {
+            const h2 = S.clone().add(ctx.tcp('R').sub(ctx.item(stack[0]).pos))
+            return [
+              { k: 'move', arms: { R: T(up(h2, 0.03), DOWN, c) }, slow: true },
+              { k: 'move', arms: { R: T(h2, DOWN, c) }, slow: true },
+            ]
+          },
+        },
+        { k: 'grip', side: 'R', g: 0.7 },
+        { k: 'release', side: 'R', item: top, container: 'kitchen', pos: [0, 0, 0], yaw: 0, where: 'counter' },
+        { k: 'move', arms: { R: T(up(hand, 0.2), DOWN) } },
+        { k: 'move', arms: { R: tuck('R') } },
+        { k: 'move', arms: { L: fold('L') } },
+      ]
+    },
+  })
+
+  // Back off from the counter, so there's room to turn for whatever comes next.
+  acts.push(
+    { k: 'move', arms: { L: tuck('L'), R: tuck('R') } },
+    { k: 'nudge', d: -0.3 },
+    { k: 'say', text: 'Table cleared: the plates are stacked on the counter, ready for the dishwasher' },
+  )
+  return acts
+}
+
 export function planTask(id: TaskId, ctx: PlanCtx, opts: { towelsLeft: number }): Act[] {
   // Hands left low (resting on a table after the last task)? Raise the torso and lift the hands
   // straight up off it first, so the arms swing in to tuck from well above the table.
@@ -1352,6 +1552,7 @@ export function planTask(id: TaskId, ctx: PlanCtx, opts: { towelsLeft: number })
   // loading the dishwasher happens right beside its open door, where a hanging arm would hit it.
   if (id === 'cleanup') return [...handsUp, ...planCleanup(ctx)]
   if (id === 'dishes') return [...handsUp, ...planDishes(ctx)]
+  if (id === 'table') return [...handsUp, ...planTable(ctx)]
   const acts = id === 'sort' ? planSort(ctx) : id === 'fold' ? planFold(ctx, opts.towelsLeft) : planWash(ctx)
   return [...handsUp, ...hangIdleArms(acts, true)]
 }

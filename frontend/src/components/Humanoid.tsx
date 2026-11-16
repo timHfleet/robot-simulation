@@ -4,7 +4,7 @@ import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
 import { TransformControls } from 'three/examples/jsm/controls/TransformControls.js'
 import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js'
 import { RoundedBoxGeometry } from 'three/examples/jsm/geometries/RoundedBoxGeometry.js'
-import { ArrowDown, ArrowLeft, ArrowRight, ArrowUp, Boxes, Crosshair, Hand, RotateCcw, Shirt, SlidersHorizontal, Square, Trash2, UtensilsCrossed, WashingMachine } from 'lucide-react'
+import { ArrowDown, ArrowLeft, ArrowRight, ArrowUp, Boxes, Crosshair, Hand, Layers, RotateCcw, Shirt, SlidersHorizontal, Square, Trash2, UtensilsCrossed, WashingMachine } from 'lucide-react'
 import clsx from 'clsx'
 import { approach, clamp, deg, fmt, rad, servoStep, wrap } from '../lib/math'
 import {
@@ -33,7 +33,7 @@ import { DOCKS, ITEMS, KITCHEN, LAUNDRY, STAGING, doorAngleFor, foldAngleFor, fu
 import { handPath, keepOutsAll, keepOutsFor, keepOutsRound, pathSteps, toRobotGoal, waistForMove, type HandGoal } from '../lib/motion'
 import { TASKS, planTask, type Act, type Mechanism, type PlanCtx, type TaskId } from '../lib/tasks'
 import { ballOf, buildClutter, type Clutter } from './clutter'
-import { DINING_FOOTPRINTS, DINING_STATICS, buildDining } from './dining'
+import { DINING, DINING_FOOTPRINTS, DINING_STATICS, buildDining } from './dining'
 import { BEDROOM_FOOTPRINTS, buildBedroom } from './bedroom'
 import { PLAN_WALLS, HOUSE_FOOTPRINTS, LIVING_FOOTPRINTS, START, buildHouse, fadeWalls } from './house'
 import { FloorGrid, planPath, pathLength, type Disc, type Pt } from '../lib/pathPlan'
@@ -177,7 +177,8 @@ function armsClearAt(x: number, z: number, yaw: number) {
   return true
 }
 
-type Seg = { kind: 'turn'; yaw: number } | { kind: 'line'; x: number; z: number; vmax: number }
+/** `square`: roll straight on at the current heading (no steering onto the point): it arrives square, a little off to the side at worst. */
+type Seg = { kind: 'turn'; yaw: number } | { kind: 'line'; x: number; z: number; vmax: number; square?: boolean }
 
 /**
  * Base cameras: a wide-angle camera pod on each face of the base, tilted down at the floor.
@@ -1206,7 +1207,7 @@ export default function Humanoid() {
     const objOf = (id: string) => S.items.get(id) ?? clutterOf(id)?.obj
     const itemName = (id: string) => {
       const pr = clutterOf(id)
-      if (pr) return pr.kind === 'trash' ? 'piece of rubbish' : pr.kind
+      if (pr) return pr.kind === 'trash' ? 'piece of rubbish' : pr.kind === 'dinnerplate' ? 'plate' : pr.kind
       const def = ITEMS.find((d) => d.id === id)
       if (!def) return id
       return def.kind === 'block' ? `${def.color} block` : def.kind === 'cup' ? 'mug' : def.kind
@@ -1280,6 +1281,7 @@ export default function Humanoid() {
       kindOf: (id) => clutterOf(id)?.kind ?? null,
       held: () => ({ ...(phys ? phys.stats().held : {}), ...clothHeld }),
       tcp: (side) => tcpWorld(side),
+      closeAxis: (side) => new THREE.Vector3(0, 0, 1).applyQuaternion(w.arms[side].tcp.getWorldQuaternion(new THREE.Quaternion())),
       robot: () => ({ x: sim.x, z: sim.z, yaw: sim.yaw }),
       free: (x, z, yaw) => !blockedAt(x, z, yaw),
       workClear: (x, z, yaw) => armsClearAt(x, z, yaw),
@@ -1418,7 +1420,7 @@ export default function Humanoid() {
       if (!pts) return null
       const segs = [...(esc ? [esc.seg] : []), ...segsAlong(start, pts)]
       segs.push({ kind: 'turn', yaw })
-      if (back > 0.001) segs.push({ kind: 'line', x, z, vmax: 0.2 })
+      if (back > 0.001) segs.push({ kind: 'line', x, z, vmax: 0.2, square: true })
       return segs
     }
     /**
@@ -1579,7 +1581,10 @@ export default function Humanoid() {
           // Tables, tubs, the basket and machines the arm must stay above, where the robot stands now.
           // Cleaning up, the robot works all round the room at any angle: keep clear of every
           // station's furniture and of the bin and hamper, wherever they are relative to it.
-          const keepOut = sim.task!.id === 'cleanup' ? keepOutsAll(robot, [w.clutter.bin, w.clutter.hamper]) : keepOutsFor(station, robot)
+          const roaming = sim.task!.id === 'cleanup' || sim.task!.id === 'table'
+          const keepOut = roaming ? keepOutsAll(robot, [w.clutter.bin, w.clutter.hamper]) : keepOutsFor(station, robot)
+          // Clearing the table: the arm keeps above the dining table (the hand reaches down past its edge).
+          if (sim.task!.id === 'table') keepOut.push(...keepOutsRound(robot, [], [{ rect: DINING_FOOTPRINTS[0], y: DINING.h }]))
           // The robot's own base: reaching down to the floor, the elbow and forearm stay above it.
           keepOut.push({ x0: -0.34, x1: 0.34, z0: -0.31, z1: 0.31, y: 0.36, hand: false })
           // The dishwasher door lying open: the whole arm, hand too, stays above it.
@@ -1688,6 +1693,13 @@ export default function Humanoid() {
           S.where.set(a.item, a.where)
           break
         }
+        case 'glue':
+          // Cutlery still lying where it was becomes part of its plate (a plate keeps its own status).
+          if (phys?.glue(a.item, a.onto) && (S.where.get(a.item) ?? 'floor') === 'floor') S.where.set(a.item, `on:${a.onto}`)
+          break
+        case 'unglue':
+          phys?.unglue(a.item)
+          break
         case 'bind': {
           if (a.mech.kind === 'fold') {
             // Pinch the cloth under every closed hand that is down at it (both hands for the bottom fold).
@@ -1977,7 +1989,7 @@ export default function Humanoid() {
             const dist = Math.hypot(dx, dz)
             const cap = Math.min(seg.vmax, st.maxSpeed)
             vT = clamp(along * 1.6, -cap, cap)
-            if (along > 0.1) wT = clamp(2.5 * wrap(Math.atan2(-dz, dx) - sim.yaw), -1, 1)
+            if (along > 0.1 && !seg.square) wT = clamp(2.5 * wrap(Math.atan2(-dz, dx) - sim.yaw), -1, 1)
             // Arrived, or as near as the base can get (within 3 cm, with furniture stopping it).
             if (((dist < 0.006 || Math.abs(along) < 0.004) && Math.abs(sim.v) < 0.03) || (dist < 0.03 && sim.blockedFor > 0.2)) {
               sim.blockedFor = 0
@@ -2386,7 +2398,7 @@ export default function Humanoid() {
   const padBtn = 'grid h-11 place-items-center rounded-lg bg-slate-800 text-slate-200 ring-1 ring-slate-700 hover:bg-slate-700 active:bg-cyan-500 active:text-slate-950 select-none touch-none'
   const stateTone = tele.state === 'Blocked' ? 'bad' : tele.state === 'Arrived' ? 'good' : undefined
   const busy = tele.task ? 'pointer-events-none opacity-50' : undefined
-  const TASK_ICONS: Record<TaskId, typeof Boxes> = { sort: Boxes, dishes: UtensilsCrossed, fold: Shirt, wash: WashingMachine, cleanup: Trash2 }
+  const TASK_ICONS: Record<TaskId, typeof Boxes> = { sort: Boxes, dishes: UtensilsCrossed, fold: Shirt, wash: WashingMachine, cleanup: Trash2, table: Layers }
   const ikMode = settings.armMode === 'ik'
   const ikSide: Side = settings.armSel === 'L' ? 'L' : 'R'
   const ik = tele.ik[ikSide]

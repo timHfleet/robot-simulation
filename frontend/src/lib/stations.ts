@@ -124,6 +124,12 @@ export const KITCHEN = {
   /** Start button on the door's front, top right (station coordinates with the door shut). */
   button: { a: 0.395, y: 0.74, b: 0.2 },
   plate: { r: 0.1, t: 0.012 },
+  /**
+   * Clearing the dining table: where the stack of dinner plates is set down (on the left counter,
+   * past the drying mat, clear of what Load dishwasher works with), and where the robot stands for it.
+   */
+  stackAt: { a: 0.62, b: -1.17 },
+  stackPose: { a: 0, b: -1.17 },
   cup: { r: 0.04, h: 0.09 },
   /** Drying rack on the left counter: plates stand with their faces along b. */
   plateRack: { a: 0.47, b0: -0.56, b1: -0.32, slots: [-0.37, -0.44, -0.51] },

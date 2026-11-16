@@ -76,6 +76,13 @@ export interface Physics {
   grab(side: Side, id: string): boolean
   /** Let go of whatever the hand holds. */
   release(side: Side): string | null
+  /**
+   * Fix an item to another where it is now, as if it rests there for good (a plate on a stack,
+   * the cutlery on a plate): it then goes wherever that one goes. The two stop colliding.
+   */
+  glue(id: string, onto: string): boolean
+  /** Undo glue(): the item is loose again. */
+  unglue(id: string): void
   /** Free the engine's memory. */
   dispose(): void
   /** Put every item back where Stations.reset() placed it, at rest. */
@@ -348,6 +355,8 @@ export async function createPhysics(scene: THREE.Scene, stations: Stations, rig:
     items.set(def.id, { body, collider, obj })
   }
   const held: Partial<Record<Side, { id: string; joint: RAPIER.ImpulseJoint }>> = {}
+  /** Items glued to another (id -> joint and what it's glued to). */
+  const glued = new Map<string, { joint: RAPIER.ImpulseJoint; onto: string }>()
 
   // Mess on the floor: each loose piece is an ordinary item (dynamic, and the hands can pick
   // it up); `loose` remembers where it started, for Reset scene. The bin and hamper are hollow.
@@ -391,7 +400,9 @@ export async function createPhysics(scene: THREE.Scene, stations: Stations, rig:
       const d =
         sh.kind === 'ball'
           ? R.ColliderDesc.ball(sh.r)
-          : sh.kind === 'cyl'
+          : sh.kind === 'cyl' && sh.flat
+            ? R.ColliderDesc.cylinder(sh.h / 2, sh.r)
+            : sh.kind === 'cyl'
             ? // A 10-sided prism, not a true cylinder: lying on its side, a true cylinder never
               // settles and creeps across the floor; a faceted one rests like a dented can.
               (() => {
@@ -419,6 +430,8 @@ export async function createPhysics(scene: THREE.Scene, stations: Stations, rig:
       if (h) world.removeImpulseJoint(h.joint, true)
       delete held[side]
     }
+    for (const [, g] of glued) world.removeImpulseJoint(g.joint, true)
+    glued.clear()
     for (const l of loose) {
       l.obj.position.copy(l.p)
       l.obj.quaternion.copy(l.q)
@@ -466,6 +479,15 @@ export async function createPhysics(scene: THREE.Scene, stations: Stations, rig:
       for (const side of ['L', 'R'] as Side[]) {
         const h = held[side]
         if (h) items.get(h.id)?.body.wakeUp()
+      }
+      // Nor anything glued to something that's moving (either way: a stack lifted by its top
+      // plate pulls the ones below along).
+      for (const [id, g] of glued) {
+        const a = items.get(id)?.body
+        const b = items.get(g.onto)?.body
+        if (!a || !b) continue
+        if (!b.isSleeping()) a.wakeUp()
+        if (!a.isSleeping()) b.wakeUp()
       }
       world.step()
       // Keep items physical: nothing in a kitchen moves faster than this.
@@ -534,7 +556,33 @@ export async function createPhysics(scene: THREE.Scene, stations: Stations, rig:
     return h.id
   }
 
+  const glue = (id: string, onto: string) => {
+    const it = items.get(id)
+    const base = items.get(onto)
+    if (!it || !base || id === onto || glued.has(id)) return false
+    const bt = base.body.translation()
+    const br = base.body.rotation()
+    const bq = new THREE.Quaternion(br.x, br.y, br.z, br.w)
+    const t = it.body.translation()
+    const r = it.body.rotation()
+    const rel = v(t.x - bt.x, t.y - bt.y, t.z - bt.z).applyQuaternion(bq.clone().invert())
+    const relQ = bq.clone().invert().multiply(new THREE.Quaternion(r.x, r.y, r.z, r.w))
+    const joint = world.createImpulseJoint(R.JointData.fixed(rel, relQ, { x: 0, y: 0, z: 0 }, { x: 0, y: 0, z: 0, w: 1 }), base.body, it.body, true)
+    joint.setContactsEnabled(false)
+    glued.set(id, { joint, onto })
+    return true
+  }
+  const unglue = (id: string) => {
+    const g = glued.get(id)
+    if (!g) return
+    world.removeImpulseJoint(g.joint, true)
+    glued.delete(id)
+    items.get(id)?.body.wakeUp()
+  }
+
   return {
+    glue,
+    unglue,
     dispose: () => {
       try {
         world.free()
