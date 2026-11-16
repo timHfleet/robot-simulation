@@ -316,7 +316,8 @@ interface ArmRig {
   joints: THREE.Group[]
   axes: THREE.Vector3[]
   leds: THREE.MeshStandardMaterial[]
-  fingers: [THREE.Group, THREE.Group]
+  /** Finger pivots: the thumb, then the index and middle fingers. */
+  fingers: THREE.Group[]
   tcp: THREE.Mesh
   /** Wrist camera on the palm, looking down past the fingers at what the hand is about to grip. */
   cam: THREE.PerspectiveCamera
@@ -400,28 +401,43 @@ function buildArm(side: Side, carriage: THREE.Group): ArmRig {
   g5.add(knuckle)
   mount(g5, 6, 0.021, 0.056, 1)
 
-  // Gripper: cuff, palm and two fingers on pivots.
+  // Hand: cuff, palm, and three fingers like a person's pinch: a thumb on one side closing
+  // against the index and middle fingers side by side on the other. Each finger has two
+  // segments; the tip segment curls in a little more as the hand closes.
   const cuff = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.033, 0.02, 28), MAT.accent)
   cuff.position.y = -0.03
-  const palm = rbox(0.05, 0.05, 0.09, 0.012, MAT.black)
+  const palm = rbox(0.046, 0.05, 0.08, 0.014, MAT.white)
   palm.position.y = -0.06
   g6.add(shadowed(cuff), palm)
   const fingers: THREE.Group[] = []
-  for (const fz of [0.024, -0.024]) {
+  /** One finger on a pivot at `fz` across the palm (its side) and `fx` along it. */
+  const finger = (fx: number, fz: number, w: number, thick: number, len1: number, len2: number) => {
+    const inward = -Math.sign(fz)
     const pivot = new THREE.Group()
-    pivot.position.set(0, -0.085, fz)
-    const pin = new THREE.Mesh(new THREE.CylinderGeometry(0.006, 0.006, 0.054, 12), MAT.alu)
-    pin.rotation.z = Math.PI / 2
-    const link = rbox(0.024, 0.062, 0.012, 0.004, MAT.black)
-    link.position.y = -0.031
-    const pad = rbox(0.026, 0.02, 0.006, 0.002, MAT.rubber)
-    pad.position.set(0, -0.052, -Math.sign(fz) * 0.008)
-    const tip = rbox(0.026, 0.012, 0.014, 0.003, MAT.accent)
-    tip.position.y = -0.064
-    pivot.add(shadowed(pin), link, pad, tip)
+    pivot.position.set(fx, -0.085, fz)
+    const knuckle = new THREE.Mesh(new THREE.CylinderGeometry(thick * 0.55, thick * 0.55, w + 0.004, 14), MAT.alu)
+    knuckle.rotation.z = Math.PI / 2
+    const prox = rbox(w, len1, thick, Math.min(w, thick) * 0.35, MAT.white)
+    prox.position.y = -len1 / 2
+    const mid = new THREE.Group()
+    mid.position.y = -len1
+    const joint = new THREE.Mesh(new THREE.CylinderGeometry(thick * 0.5, thick * 0.5, w + 0.002, 12), MAT.gray)
+    joint.rotation.z = Math.PI / 2
+    const dist = rbox(w * 0.94, len2, thick * 0.92, Math.min(w, thick) * 0.35, MAT.white)
+    dist.position.y = -len2 / 2
+    const pad = rbox(w * 0.9, len2 * 0.8, 0.004, 0.0015, MAT.rubber)
+    pad.position.set(0, -len2 * 0.55, inward * thick * 0.48)
+    mid.add(shadowed(joint), shadowed(dist), pad)
+    pivot.add(shadowed(knuckle), shadowed(prox), mid)
+    pivot.userData.tip = mid
     g6.add(pivot)
     fingers.push(pivot)
   }
+  // Thumb on the inner side (toward the body when the arm hangs), index and middle on the outer.
+  const thumbZ = -s * 0.024
+  finger(0, thumbZ, 0.02, 0.016, 0.034, 0.03)
+  finger(0.0105, -thumbZ, 0.0125, 0.013, 0.036, 0.03)
+  finger(-0.0105, -thumbZ, 0.0125, 0.013, 0.036, 0.03)
   // Tool centre point marker (shown in IK mode).
   const tcp = new THREE.Mesh(new THREE.SphereGeometry(0.008, 12, 8), new THREE.MeshBasicMaterial({ color: '#fbbf24', depthTest: false }))
   tcp.position.set(0, -0.14, 0)
@@ -439,13 +455,19 @@ function buildArm(side: Side, carriage: THREE.Group): ArmRig {
   cam.position.copy(eye)
   cam.quaternion.setFromRotationMatrix(new THREE.Matrix4().lookAt(eye, new THREE.Vector3(0, -0.165, 0), new THREE.Vector3(1, 0, 0)))
   g6.add(cam)
-  return { side, joints, axes, leds, fingers: fingers as [THREE.Group, THREE.Group], tcp, cam }
+  return { side, joints, axes, leds, fingers, tcp, cam }
 }
 
 function poseArm(arm: ArmRig, q: number[], grip: number) {
   arm.joints.forEach((g, i) => g.quaternion.setFromAxisAngle(arm.axes[i], q[i]))
   const a = -0.3 + grip * 0.86
-  arm.fingers.forEach((f) => (f.rotation.x = -Math.sign(f.position.z) * a))
+  // The tip segments curl in further as the hand closes, like finger tips meeting the thumb.
+  const curl = (1 - grip) * 0.35
+  arm.fingers.forEach((f) => {
+    const sgn = -Math.sign(f.position.z)
+    f.rotation.x = sgn * a
+    ;(f.userData.tip as THREE.Group).rotation.x = sgn * curl
+  })
 }
 
 interface Head {
@@ -1607,7 +1629,7 @@ export default function Humanoid() {
             }
             // The hand travels in a straight line in small steps, each solved from the last,
             // keeping the elbow, wrist and palm above the work surface.
-            const r = handPath(side, sim.qT[side], lift, w0, w1, goals[side]!, K, { rest: REST, keepOut })
+            const r = handPath(side, sim.qT[side], lift, w0, w1, goals[side]!, K, { rest: REST, keepOut, posture: g.posture })
             qs[side] = r.qs
             sim.ik[side] = r.res
             if (import.meta.env.DEV && !r.res.reached)

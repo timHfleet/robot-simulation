@@ -44,7 +44,7 @@ export function handPath(
   w1: number,
   goal: HandGoal,
   steps: number,
-  opts: { rest: number[]; keepOut?: KeepOut[] | null },
+  opts: { rest: number[]; keepOut?: KeepOut[] | null; posture?: number[] },
 ): { qs: number[][]; res: IKResult } {
   const s = startPose(side, q0, lift, w0)
   // The gripper is symmetric: closing along c or -c is the same grasp.
@@ -65,7 +65,12 @@ export function handPath(
       const p = last ? goal.pos : s.p.clone().lerp(goal.pos, t)
       const d = last ? goal.dir : s.d.clone().lerp(goal.dir, t).normalize()
       const c = goal.close ? (last ? goal.close : c0.clone().lerp(goal.close, t).normalize()) : null
-      res = solveIK(side, q, torsoBase(lift, w0 + (w1 - w0) * t), p, { dir: d, close: c, rest: q, keepOut: opts.keepOut, local: true })
+      // With a posture to settle into, each step starts a little nearer it (all the way by the
+      // last step), so the elbow comes down to it smoothly as the hand travels; otherwise the
+      // spare freedom stays as it is.
+      const P = opts.posture
+      const seed = P ? q.map((v, i) => v + (P[i] - v) / (steps - k + 1)) : q
+      res = solveIK(side, seed, torsoBase(lift, w0 + (w1 - w0) * t), p, { dir: d, close: c, rest: P ?? q, keepOut: opts.keepOut, local: true })
       q = res.q
       qs.push(q)
     }
@@ -75,7 +80,7 @@ export function handPath(
   if (close(first.res)) return first
   // No smooth way along the line: find a pose that reaches the goal and blend every
   // joint toward it over the whole move, rather than snapping at the end.
-  const wide = solveIK(side, q0, torsoBase(lift, w1), goal.pos, { dir: goal.dir, close: goal.close, rest: opts.rest, keepOut: opts.keepOut })
+  const wide = solveIK(side, q0, torsoBase(lift, w1), goal.pos, { dir: goal.dir, close: goal.close, rest: opts.posture ?? opts.rest, keepOut: opts.keepOut })
   if (!wide.reached && wide.posErr >= first.res.posErr) return first
   const qs = Array.from({ length: steps }, (_, k) => q0.map((v, i) => v + ((wide.q[i] - v) * (k + 1)) / steps))
   return { qs, res: wide }

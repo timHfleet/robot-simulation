@@ -47,6 +47,11 @@ export interface Target {
   frame?: 'world' | 'torso'
   /** Don't turn the waist for this target. */
   keepWaist?: boolean
+  /**
+   * Joint angles the arm should settle into on the way (the elbow down at the side, not
+   * flared out): the arm's spare freedom drifts toward them while the hand moves.
+   */
+  posture?: number[]
 }
 export type ArmGoal = Target | number[]
 
@@ -113,25 +118,29 @@ export interface PlanCtx {
   hamper: Container
 }
 
+/** The axis a hand's fingers close along, from its tool frame. */
+const closeOf = (tool: THREE.Matrix4) => new THREE.Vector3(0, 0, 1).transformDirection(tool)
+
 /** Arms hanging beside the body (used before driving off and at the end). */
 export const REST_Q = [0, 8, 0, 15, 0, 0, 0].map(rad)
 /**
- * Ready pose between items: elbows at the sides, hands up in front with the
- * fingers pointing down, above table height but short of the table edge.
+ * Ready pose between items, like a person's: upper arms down at the sides, forearms
+ * forward and the hands carrying on from them, fingers forward and a little down,
+ * above table height but short of the table edge.
  */
-export const TUCK_Q = [15, 8, 0, 125, 0, -130, 0].map(rad)
-/** The same ready pose as a hand target, so getting there is a smooth straight-line move. */
+export const TUCK_Q = [-10, 8, 0, 130, 0, -65, 0].map(rad)
 /** Where the hand is when the arm hangs (REST_Q), relative to the shoulders, as a hand target. */
 export const hang = (side: Side): Target => {
   const f = fk(side, REST_Q, torsoBase(0, 0))
-  return { frame: 'torso', pos: f.tcp, approach: f.dir, keepWaist: true }
+  return { frame: 'torso', pos: f.tcp, approach: f.dir, close: closeOf(f.tool), keepWaist: true, posture: REST_Q }
 }
-export const tuck = (side: Side): Target => ({
-  frame: 'torso',
-  pos: new THREE.Vector3(0.29, -0.25, side === 'L' ? -0.31 : 0.31),
-  approach: new THREE.Vector3(0.17, -0.98, side === 'L' ? -0.14 : 0.14).normalize(),
-  keepWaist: true,
-})
+/** The same ready pose as a hand target, so getting there is a smooth straight-line move. */
+export const tuck = (side: Side): Target => {
+  const f = fk(side, TUCK_Q, torsoBase(0, 0))
+  // The hand's roll is fixed too (palms facing in), so the arm always comes back to this
+  // same untwisted posture, wherever it was working.
+  return { frame: 'torso', pos: f.tcp, approach: f.dir, close: closeOf(f.tool), keepWaist: true, posture: TUCK_Q }
+}
 
 /** Gripper setting whose fingertips just touch an object this wide. */
 export function gripFor(width: number) {
@@ -481,6 +490,9 @@ function planDishes(ctx: PlanCtx): Act[] {
             return place
           },
         },
+        // Up out of the rack with the torso before the hand turns back to the ready pose,
+        // so the fingers never swing through the dishes.
+        { k: 'lift', h: 0.95 },
         { k: 'move', arms: { R: tuck('R') } },
       )
     })
@@ -1009,8 +1021,13 @@ const CARRY_LIFT = 1.05 // arms ride above every work surface (the washer's top 
 /** How far the base's front edge is from its centre. */
 const BASE_FRONT = 0.33
 
-/** Holding pose for a hand that carries something while the other works: up in front of its shoulder. */
-const carry = (side: Side): Target => ({
+/** Holding pose for a hand that carries something: the ready pose, held in front at the waist. */
+const carry = tuck
+/**
+ * While the torso drops to pick something off the floor, a hand that holds something
+ * comes up in front of its shoulder, so what it holds (a towel hangs 30 cm) clears the floor.
+ */
+const carryUp = (side: Side): Target => ({
   frame: 'torso',
   pos: new THREE.Vector3(0.26, -0.02, side === 'L' ? -0.26 : 0.26),
   approach: new THREE.Vector3(0.2, -0.98, 0).normalize(),
@@ -1124,7 +1141,7 @@ function planCleanup(ctx: PlanCtx): Act[] {
     const at = new THREE.Vector3(pos.x, shape.kind === 'cyl' || kind === 'towel' ? Math.max(pos.y, 0.012) : g.y, pos.z)
     const other: Side = side === 'L' ? 'R' : 'L'
     return [
-      { k: 'move', arms: { [other]: carry(other) } },
+      { k: 'move', arms: { [other]: ctx.held()[other] ? carryUp(other) : carry(other) } },
       { k: 'lift', h: FLOOR_LIFT },
       { k: 'grip', side, g: Math.min(1, gripFor(Math.max(g.width, 0.02)) + 0.35) },
       { k: 'move', arms: { [side]: T(at.clone().addScaledVector(approach, -0.12), approach, close) } },
@@ -1511,7 +1528,9 @@ function planTable(ctx: PlanCtx): Act[] {
         },
         { k: 'grip', side: 'R', g: 0.7 },
         { k: 'release', side: 'R', item: top, container: 'kitchen', pos: [0, 0, 0], yaw: 0, where: 'counter' },
-        { k: 'move', arms: { R: T(up(hand, 0.2), DOWN) } },
+        { k: 'move', arms: { R: T(up(hand, 0.2), DOWN, c) } },
+        // Back out the way it came, high over the mugs and the drying rack, before the hand turns to the ready pose.
+        { k: 'move', arms: { R: T(up(hand, 0.32).addScaledVector(fwd, -0.3), DOWN, c) } },
         { k: 'move', arms: { R: tuck('R') } },
         { k: 'move', arms: { L: fold('L') } },
       ]
@@ -1541,7 +1560,12 @@ export function planTask(id: TaskId, ctx: PlanCtx, opts: { towelsLeft: number })
   const handsUp: Act[] = low
     ? [
         { k: 'lift', h: 1.18 },
-        { k: 'move', arms: { L: T(up(ctx.tcp('L'), 0.3), DOWN), R: T(up(ctx.tcp('R'), 0.3), DOWN) }, slow: true },
+        // Up and back toward the body, clear of the edge of whatever is in front (a plate in the drying rack).
+        {
+          k: 'move',
+          arms: { L: T(up(ctx.tcp('L'), 0.3).addScaledVector(fwd, -0.12), DOWN), R: T(up(ctx.tcp('R'), 0.3).addScaledVector(fwd, -0.12), DOWN) },
+          slow: true,
+        },
         // Then in close over the base, clear of whatever they were working on, and back off a
         // little so the arms have room to tuck.
         { k: 'move', arms: { L: T(close(-1), DOWN), R: T(close(1), DOWN) } },
@@ -1588,6 +1612,7 @@ function hangIdleArms(acts: Act[], during: boolean): Act[] {
       const lift = parks.filter((s) => !hanging[s])
       if (lift.length) {
         out.push(moveOf(lift, tuck))
+        out.push(moveOf(lift, drawBack))
         out.push(moveOf(lift, hang))
       }
       for (const s of parks) hanging[s] = true
@@ -1598,10 +1623,20 @@ function hangIdleArms(acts: Act[], during: boolean): Act[] {
     // Work: a hanging arm first comes up to the ready pose (straight up beside the
     // body), so it never sweeps up through the table edge.
     const unhang = SIDES.filter((s) => a.arms[s] && hanging[s] && !isTuck(a.arms[s]))
-    if (unhang.length) out.push(moveOf(unhang, tuck))
+    if (unhang.length) out.push(moveOf(unhang, drawBack), moveOf(unhang, tuck))
     for (const s of SIDES) if (a.arms[s]) hanging[s] = false
     out.push(a)
   })
   return out
 }
 const SIDES: Side[] = ['L', 'R']
+/**
+ * Between the ready pose and hanging: the hand drawn back beside the hip, above table
+ * height, so lowering the arm (or raising it again) never sweeps the fingers over the table edge.
+ */
+const drawBack = (side: Side): Target => ({
+  frame: 'torso',
+  pos: new THREE.Vector3(0.13, -0.27, side === 'L' ? -0.34 : 0.34),
+  approach: new THREE.Vector3(0.3, -0.95, 0).normalize(),
+  keepWaist: true,
+})
