@@ -1425,7 +1425,7 @@ function planTable(ctx: PlanCtx): Act[] {
   const carryFlat = (side: Side, sign: number): Target => {
     const g = rimGrip(new THREE.Vector3(0, 0, sgn(side)))
     g.close.multiplyScalar(sign)
-    return { frame: 'torso', pos: plateCarryPos(side), approach: g.approach, close: g.close, exactClose: true, keepWaist: true, posture: PLATE_CARRY_Q }
+    return { frame: 'torso', pos: plateCarryPos(side), approach: g.approach, close: g.close, exactClose: true, keepWaist: true }
   }
   /** Which way round a hand closes relative to `c` (+1 or -1): moves holding something keep it that way. */
   const signOf = (side: Side, c: THREE.Vector3) => (ctx.closeAxis(side).dot(c) < 0 ? -1 : 1)
@@ -1446,8 +1446,10 @@ function planTable(ctx: PlanCtx): Act[] {
     return [
       { k: 'lift', h: 1.08 },
       { k: 'grip', side, g: 0.75 },
-      // In from above and outside the rim, along the fingers.
-      { k: 'move', arms: { [side]: H(P.clone().addScaledVector(g.approach, -0.12), g.approach, g.close) } },
+      // In from above and outside the rim, along the fingers, the elbow coming down to the side
+      // on the way (while the hand is still empty): holding the plate, the arm then only moves on
+      // from there, so the plate stays level all the way to the carrying pose.
+      { k: 'move', arms: { [side]: { ...H(P.clone().addScaledVector(g.approach, -0.12), g.approach, g.close), posture: PLATE_CARRY_Q } } },
       { k: 'move', arms: { [side]: H(P, g.approach, g.close) }, slow: true },
       { k: 'grip', side, g: gripFor(0.02) },
       { k: 'grab', side, item: id },
@@ -1512,9 +1514,9 @@ function planTable(ctx: PlanCtx): Act[] {
           const hand = up(S, 0.002).addScaledVector(out, RIM_IN)
           const at = (p: THREE.Vector3) => H(p, g.approach, g.close)
           return [
-            // High over the front of the counter, then down at the back.
-            { k: 'move', arms: { [side]: at(up(hand, 0.32).addScaledVector(fwd, -0.3)) } },
-            { k: 'move', arms: { [side]: at(up(hand, 0.32)) } },
+            // Level and low, just over the counter, straight in to above the spot (lifted high, the
+            // arm can't keep the plate level with the elbow down, and would turn it over).
+            { k: 'move', arms: { [side]: at(up(hand, 0.06)) } },
             // Measured again over the spot (the waist may have turned on the way), then straight down.
             {
               k: 'plan',
@@ -1534,8 +1536,7 @@ function planTable(ctx: PlanCtx): Act[] {
               k: 'plan',
               make: (): Act[] => [{ k: 'move', arms: { [side]: at(ctx.tcp(side).addScaledVector(g.approach, -0.06)) } }],
             },
-            { k: 'move', arms: { [side]: at(up(hand, 0.2)) } },
-            { k: 'move', arms: { [side]: at(up(hand, 0.32).addScaledVector(fwd, -0.3)) } },
+            { k: 'move', arms: { [side]: at(up(hand, 0.12).addScaledVector(fwd, -0.1)) } },
             { k: 'move', arms: { [side]: tuck(side) } },
           ]
         },
