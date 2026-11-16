@@ -1366,17 +1366,26 @@ const RIM_IN = 0.125
  * plate tilted this far from straight down, the thumb on top and the fingers under the rim.
  */
 const RIM_TILT = rad(45)
-/** The right arm carrying a plate: elbow down at the side, forearm forward, wrist turned in. */
+/** An arm carrying plates: elbow down at the side, forearm forward, wrist turned in. */
 const PLATE_CARRY_Q = [22, 13, 2, 123, 146, 135, 10].map(rad)
-/** Torso height carrying plates: the hand rides low by the waist, so the torso goes up to keep the plate above tables and counters. */
+/** Torso height carrying plates: the hands ride low by the waist, so the torso goes up to keep the plates above tables and counters. */
 const PLATE_LIFT = 1.18
-/** Which way round the right hand closes on a plate's rim (relative to rimGrip's axis) to suit PLATE_CARRY_Q. */
-const PLATE_SIGN = -1
 /** Fingers' direction and closing axis for a rim grip, `out` pointing from the plate's centre to the hand. */
 const rimGrip = (out: THREE.Vector3) => ({
   approach: DOWN.clone().multiplyScalar(Math.cos(RIM_TILT)).addScaledVector(out, -Math.sin(RIM_TILT)),
   close: out.clone().multiplyScalar(Math.cos(RIM_TILT)).addScaledVector(UP, -Math.sin(RIM_TILT)),
 })
+/** Where a hand carries plates (torso frame): under its shoulder, the plate across in front, clear of the other hand's. */
+const plateCarryPos = (side: Side) => new THREE.Vector3(0.28, -0.2, side === 'L' ? -0.3 : 0.3)
+/**
+ * Which way round a hand closes on a plate's rim (relative to rimGrip's axis) so that it can
+ * carry the plate in PLATE_CARRY_Q, elbow down: the other way round only works with the elbow up.
+ */
+const plateSign = (side: Side) => {
+  const f = fk(side, PLATE_CARRY_Q, torsoBase(0, 0))
+  const z = new THREE.Vector3(0, 0, 1).transformDirection(f.tool)
+  return z.dot(rimGrip(new THREE.Vector3(0, 0, side === 'L' ? -1 : 1)).close) < 0 ? -1 : 1
+}
 /** A stacked plate sits this far above the one under it (plate thickness and the cutlery between). */
 const STACK_STEP = 0.028
 
@@ -1388,7 +1397,8 @@ function planTable(ctx: PlanCtx): Act[] {
   // Which plate is at which place (nearest), and what cutlery lies on a plate.
   const plateAt = (i: number) => {
     const p = PLACES[i]
-    return plates.map((id) => ({ id, d: Math.hypot(ctx.item(id).pos.x - p.x, ctx.item(id).pos.z - p.z) })).sort((a, b) => a.d - b.d)[0]
+    const near = plates.map((id) => ({ id, d: Math.hypot(ctx.item(id).pos.x - p.x, ctx.item(id).pos.z - p.z) })).sort((a, b) => a.d - b.d)[0]
+    return near && near.d < 0.15 ? near.id : null
   }
   const cutleryOn = (plate: string) => {
     const c = ctx.item(plate).pos
@@ -1400,202 +1410,140 @@ function planTable(ctx: PlanCtx): Act[] {
         return Math.hypot(p.x - c.x, p.z - c.z) < DPLATE_R + 0.02 && p.y > c.y && p.y < c.y + 0.03
       })
   }
-  // The stack is built at the place nearest the kitchen (the first), the others brought to it.
-  const base = 0
-  const basePlate = plateAt(base)
-  const stack: string[] = [basePlate.id]
-  const order = [1, 3, 2].filter((i) => plateAt(i) && plateAt(i).d < 0.15 && plateAt(i).id !== basePlate.id)
   const bayGoto = (i: number): Act => ({ k: 'goto', x: BAYS[i].x, z: BAYS[i].z, yaw: BAYS[i].yaw, what: 'the table' })
   const frame = () => {
     const r = ctx.robot()
     return { f: new THREE.Vector3(Math.cos(r.yaw), 0, -Math.sin(r.yaw)), rt: new THREE.Vector3(Math.sin(r.yaw), 0, Math.cos(r.yaw)) }
   }
+  const sgn = (side: Side) => (side === 'L' ? -1 : 1)
   /**
-   * Carrying a plate (or the stack) in front by its rim, the way a person does: the hand angled
-   * in on the rim and the plate held level, so nothing on it slides off.
+   * Carrying plates in front by the rim, the way a person does: the hand angled in on the rim,
+   * the elbow down at the side and the plate level, so nothing on it slides off.
    */
   const carryFlat = (side: Side, sign: number): Target => {
-    const g = rimGrip(new THREE.Vector3(0, 0, side === 'L' ? -1 : 1))
+    const g = rimGrip(new THREE.Vector3(0, 0, sgn(side)))
     g.close.multiplyScalar(sign)
-    // Close in: driving up to a counter, what's carried stays in front of its edge.
-    return {
-      frame: 'torso',
-      // The hand under its shoulder with the elbow down at the side, the plate across in front.
-      pos: new THREE.Vector3(0.28, -0.2, side === 'L' ? -0.24 : 0.24),
-      approach: g.approach,
-      close: g.close,
-      exactClose: true,
-      keepWaist: true,
-      posture: side === 'R' ? PLATE_CARRY_Q : undefined,
-    }
+    return { frame: 'torso', pos: plateCarryPos(side), approach: g.approach, close: g.close, exactClose: true, keepWaist: true, posture: PLATE_CARRY_Q }
   }
-  /** Which way round the right hand closes relative to `c` (+1 or -1): moves holding something keep it that way. */
-  const signOf = (c: THREE.Vector3) => (ctx.closeAxis('R').dot(c) < 0 ? -1 : 1)
+  /** Which way round a hand closes relative to `c` (+1 or -1): moves holding something keep it that way. */
+  const signOf = (side: Side, c: THREE.Vector3) => (ctx.closeAxis(side).dot(c) < 0 ? -1 : 1)
   /** A hand target holding something: exactly this way round. */
   const H = (p: THREE.Vector3, a: THREE.Vector3, c: THREE.Vector3): Target => ({ ...T(p, a, c), exactClose: true })
-  /** Which way (level) from the held plate's centre to the hand: the plate is set back level with the hand that side of it. */
-  const outFrom = (id: string) => ctx.tcp('R').sub(ctx.item(id).pos).setY(0).normalize()
-  /** Take a plate lying flat by its rim on the robot's right, at an angle like a person's hand. */
-  const takeRim = (id: string): Act[] => {
+  /** Which way (level) from a held plate's centre to the hand. */
+  const outFrom = (side: Side, id: string) => ctx.tcp(side).sub(ctx.item(id).pos).setY(0).normalize()
+
+  /** Take a plate (or a stack, by its top plate) by the rim on the hand's own side, at an angle like a person's hand. */
+  const takeRim = (side: Side, id: string): Act[] => {
     const { f, rt } = frame()
+    const out = rt.clone().multiplyScalar(sgn(side))
     const c = ctx.item(id).pos
-    const P = c.clone().addScaledVector(rt, RIM_IN)
+    const P = c.clone().addScaledVector(out, RIM_IN)
     P.y = c.y + 0.002
-    const g = rimGrip(rt)
-    // The hand takes the rim the one way round that lets it then carry the plate with the elbow
-    // down at the side (PLATE_CARRY_Q), not either way.
-    g.close.multiplyScalar(PLATE_SIGN)
+    const g = rimGrip(out)
+    g.close.multiplyScalar(plateSign(side))
     return [
-      { k: 'grip', side: 'R', g: 0.75 },
+      { k: 'lift', h: 1.08 },
+      { k: 'grip', side, g: 0.75 },
       // In from above and outside the rim, along the fingers.
-      { k: 'move', arms: { R: H(P.clone().addScaledVector(g.approach, -0.12), g.approach, g.close) } },
-      { k: 'move', arms: { R: H(P, g.approach, g.close) }, slow: true },
-      { k: 'grip', side: 'R', g: gripFor(0.02) },
-      { k: 'grab', side: 'R', item: id },
+      { k: 'move', arms: { [side]: H(P.clone().addScaledVector(g.approach, -0.12), g.approach, g.close) } },
+      { k: 'move', arms: { [side]: H(P, g.approach, g.close) }, slow: true },
+      { k: 'grip', side, g: gripFor(0.02) },
+      { k: 'grab', side, item: id },
       ...cutleryOn(id).map((cid): Act => ({ k: 'glue', item: cid, onto: id })),
       {
         k: 'plan',
         make: (): Act[] => {
-          const sg = signOf(g.close)
+          const sg = signOf(side, g.close)
           return [
-            { k: 'move', arms: { R: H(up(P, 0.15).addScaledVector(f, -0.06), g.approach, g.close.clone().multiplyScalar(sg)) }, slow: true },
+            { k: 'move', arms: { [side]: H(up(P, 0.15).addScaledVector(f, -0.06), g.approach, g.close.clone().multiplyScalar(sg)) }, slow: true },
             // Torso up first: the carrying hand rides low, and the plate must clear the table edge.
             { k: 'lift', h: PLATE_LIFT },
-            { k: 'move', arms: { R: carryFlat('R', sg * PLATE_SIGN) } },
+            { k: 'move', arms: { [side]: carryFlat(side, sg * plateSign(side)) } },
           ]
         },
       },
     ]
   }
 
-  /** At a place: take the plate by its right-hand rim, the cutlery on it riding along. */
-  const pickPlate = (id: string): Act[] => [
-    { k: 'say', text: 'Picking up a plate (the cutlery stays on it)' },
-    { k: 'lift', h: 1.08 },
-    ...takeRim(id),
+  // One plate in each hand, as a person would carry them: two trips, the two places on one side of
+  // the table each time. On the counter each hand's plate goes on its own spot, side by side; the
+  // second trip's plates go on top of the first's.
+  const trips: { side: Side; place: number }[][] = [
+    [
+      { side: 'L', place: 1 },
+      { side: 'R', place: 0 },
+    ],
+    [
+      { side: 'L', place: 3 },
+      { side: 'R', place: 2 },
+    ],
   ]
-  /** Back at the stack: set the plate square on top, let go, and it becomes part of the stack. */
-  const putOnStack = (id: string): Act[] => {
-    const below = stack[stack.length - 1]
-    const centre = ctx.item(below).pos.clone().add(new THREE.Vector3(0, STACK_STEP + 0.004, 0))
-    // The wrist turns the plate level again over the stack, keeping the hand's side of it.
-    const out = outFrom(id)
-    const g = rimGrip(out)
-    g.close.multiplyScalar(signOf(g.close))
-    const hand = centre.clone().addScaledVector(out, RIM_IN)
-    stack.push(id)
-    return [
-      { k: 'say', text: `Onto the stack (${stack.length} plates)` },
-      // Over the stack first with the torso still up (the carried plate rides low: lowered first,
-      // it would sweep into the stack), then down.
-      { k: 'move', arms: { R: H(up(hand, 0.12), g.approach, g.close) } },
-      { k: 'lift', h: 1.08 },
-      // Measured again once level over the stack (the waist may have turned getting there),
-      // then straight down: square on the one below.
-      {
+  const sp = toWorld('kitchen', K.stackPose.a, 0, K.stackPose.b)
+  const { fwd, W } = kitchenFrame()
+  const onCounter: Partial<Record<Side, string>> = {}
+  const acts: Act[] = [{ k: 'say', text: 'Clearing the table' }, tuckBoth(), { k: 'lift', h: CARRY_LIFT }]
+  for (const trip of trips) {
+    const loads = trip.map((t) => ({ ...t, id: plateAt(t.place) })).filter((t): t is { side: Side; place: number; id: string } => !!t.id)
+    if (!loads.length) continue
+    for (const t of loads) {
+      acts.push(
+        bayGoto(t.place),
+        { k: 'say', text: `${t.side === 'L' ? 'Left' : 'Right'} hand takes a plate (the cutlery stays on it)` },
+        { k: 'plan', make: () => takeRim(t.side, t.id) },
+      )
+    }
+    acts.push({ k: 'lift', h: PLATE_LIFT }, { k: 'goto', x: sp.x, z: sp.z, yaw: DOCKS.kitchen.yaw, what: 'the counter' }, { k: 'say', text: 'Plates down on the counter' })
+    // The right hand's first (its spot is the nearer the dishwasher), each on its own spot.
+    for (const { side, id } of [...loads].sort((a, b) => (a.side === 'R' ? 0 : 1) - (b.side === 'R' ? 0 : 1))) {
+      const below = onCounter[side]
+      onCounter[side] = id
+      const spot = K.stackAt[side]
+      acts.push({
         k: 'plan',
         make: (): Act[] => {
-          const h2 = centre.clone().add(ctx.tcp('R').sub(ctx.item(id).pos))
+          // Its own spot, or square on the plate already there.
+          const S = below ? ctx.item(below).pos.clone().add(new THREE.Vector3(0, STACK_STEP + 0.004, 0)) : W(spot.a, K.counterH + 0.01 + 0.004, spot.b)
+          // The hand keeps its side of the plate, the plate level.
+          const out = outFrom(side, id)
+          const g = rimGrip(out)
+          g.close.multiplyScalar(signOf(side, g.close))
+          const hand = up(S, 0.002).addScaledVector(out, RIM_IN)
+          const at = (p: THREE.Vector3) => H(p, g.approach, g.close)
           return [
-            { k: 'move', arms: { R: H(up(h2, 0.04), g.approach, g.close) }, slow: true },
-            { k: 'move', arms: { R: H(h2, g.approach, g.close) }, slow: true },
-            { k: 'grip', side: 'R', g: 0.7 },
-            { k: 'release', side: 'R', item: id, container: 'kitchen', pos: [0, 0, 0], yaw: 0, where: 'stack' },
-            { k: 'wait', t: 0.4 },
-            { k: 'glue', item: id, onto: below },
-            // Back out along the fingers, off the rim, then up.
-            { k: 'move', arms: { R: T(h2.clone().addScaledVector(g.approach, -0.06), g.approach, g.close) } },
-            { k: 'move', arms: { R: T(up(h2, 0.14), DOWN) } },
-            { k: 'move', arms: { R: TUCK_Q } },
+            // High over the front of the counter, then down at the back.
+            { k: 'move', arms: { [side]: at(up(hand, 0.32).addScaledVector(fwd, -0.3)) } },
+            { k: 'move', arms: { [side]: at(up(hand, 0.32)) } },
+            // Measured again over the spot (the waist may have turned on the way), then straight down.
+            {
+              k: 'plan',
+              make: (): Act[] => {
+                const h2 = S.clone().add(ctx.tcp(side).sub(ctx.item(id).pos))
+                return [
+                  { k: 'move', arms: { [side]: at(up(h2, 0.03)) }, slow: true },
+                  { k: 'move', arms: { [side]: at(h2) }, slow: true },
+                ]
+              },
+            },
+            { k: 'grip', side, g: 0.7 },
+            { k: 'release', side, item: id, container: 'kitchen', pos: [0, 0, 0], yaw: 0, where: 'counter' },
+            ...(below ? [{ k: 'wait', t: 0.4 } as Act, { k: 'glue', item: id, onto: below } as Act] : []),
+            // Out along the fingers, off the rim, then up and back the way it came.
+            {
+              k: 'plan',
+              make: (): Act[] => [{ k: 'move', arms: { [side]: at(ctx.tcp(side).addScaledVector(g.approach, -0.06)) } }],
+            },
+            { k: 'move', arms: { [side]: at(up(hand, 0.2)) } },
+            { k: 'move', arms: { [side]: at(up(hand, 0.32).addScaledVector(fwd, -0.3)) } },
+            { k: 'move', arms: { [side]: tuck(side) } },
           ]
         },
-      },
-    ]
+      })
+    }
+    // Back off from the counter, so there's room to turn for the next trip (or whatever comes next).
+    acts.push({ k: 'move', arms: { L: tuck('L'), R: tuck('R') } }, { k: 'nudge', d: -0.3 })
   }
 
-  // The first plate stays put as the bottom of the stack: its cutlery goes with it from the start.
-  const acts: Act[] = [
-    { k: 'say', text: 'Clearing the table' },
-    ...cutleryOn(basePlate.id).map((cid): Act => ({ k: 'glue', item: cid, onto: basePlate.id })),
-    tuckBoth(),
-    { k: 'lift', h: CARRY_LIFT },
-  ]
-  for (const i of order) {
-    const id = plateAt(i).id
-    acts.push(
-      bayGoto(i),
-      { k: 'plan', make: () => pickPlate(id) },
-      { k: 'lift', h: PLATE_LIFT },
-      bayGoto(base),
-      { k: 'plan', make: () => putOnStack(id) },
-    )
-  }
-  if (!order.length) acts.push(bayGoto(base))
-
-  // Lift the whole stack by the top plate's rim (everything under it is fixed to it) and carry it to the kitchen.
-  acts.push({
-    k: 'plan',
-    make: (): Act[] => {
-      const top = stack[stack.length - 1]
-      return [{ k: 'say', text: `Taking the stack of ${stack.length} plates to the kitchen` }, { k: 'lift', h: 1.08 }, ...takeRim(top)]
-    },
-  })
-  const sp = toWorld('kitchen', KITCHEN.stackPose.a, 0, KITCHEN.stackPose.b)
-  acts.push({ k: 'lift', h: PLATE_LIFT }, { k: 'goto', x: sp.x, z: sp.z, yaw: DOCKS.kitchen.yaw, what: 'the counter' })
-
-  // Set the stack down on the counter in front. The torso rises
-  // first: the hand (and the stack) is measured after that. (The left arm folds away only once
-  // the stack is down: folded against the chest it would hit the stack held in front.)
-  const { fwd, W } = kitchenFrame()
-  acts.push({ k: 'say', text: 'Stack down on the counter' }, { k: 'lift', h: PLATE_LIFT })
-  acts.push({
-    k: 'plan',
-    make: (): Act[] => {
-      const top = stack[stack.length - 1]
-      const S = W(K.stackAt.a, K.counterH + 0.01 + 0.004, K.stackAt.b)
-      // The wrist turns the stack level again on the way over, the hand on the same side of it.
-      const out = outFrom(top)
-      const g = rimGrip(out)
-      g.close.multiplyScalar(signOf(g.close))
-      const hand = up(S, (stack.length - 1) * STACK_STEP + 0.002).addScaledVector(out, RIM_IN)
-      const at = (p: THREE.Vector3) => H(p, g.approach, g.close)
-      return [
-        // High over the drying rack and the mugs at the front of the counter, then down at the back.
-        { k: 'move', arms: { R: at(up(hand, 0.32).addScaledVector(fwd, -0.3)) } },
-        { k: 'move', arms: { R: at(up(hand, 0.32)) } },
-        // Measured again over the spot (the waist may have turned on the way), then straight down.
-        {
-          k: 'plan',
-          make: (): Act[] => {
-            const h2 = S.clone().add(ctx.tcp('R').sub(ctx.item(stack[0]).pos))
-            return [
-              { k: 'move', arms: { R: at(up(h2, 0.03)) }, slow: true },
-              { k: 'move', arms: { R: at(h2) }, slow: true },
-            ]
-          },
-        },
-        { k: 'grip', side: 'R', g: 0.7 },
-        { k: 'release', side: 'R', item: top, container: 'kitchen', pos: [0, 0, 0], yaw: 0, where: 'counter' },
-        // Out along the fingers, off the rim, then up.
-        {
-          k: 'plan',
-          make: (): Act[] => [{ k: 'move', arms: { R: at(ctx.tcp('R').addScaledVector(g.approach, -0.06)) } }],
-        },
-        { k: 'move', arms: { R: at(up(hand, 0.2)) } },
-        // Back out the way it came, high over the mugs and the drying rack, before the hand turns to the ready pose.
-        { k: 'move', arms: { R: at(up(hand, 0.32).addScaledVector(fwd, -0.3)) } },
-        { k: 'move', arms: { R: tuck('R') } },
-        { k: 'move', arms: { L: fold('L') } },
-      ]
-    },
-  })
-
-  // Back off from the counter, so there's room to turn for whatever comes next.
-  acts.push(
-    { k: 'move', arms: { L: tuck('L'), R: tuck('R') } },
-    { k: 'nudge', d: -0.3 },
-    { k: 'say', text: 'Table cleared: the plates are stacked on the counter, ready for the dishwasher' },
-  )
+  acts.push({ k: 'say', text: 'Table cleared: the plates are on the counter, ready for the dishwasher' })
   return acts
 }
 

@@ -125,11 +125,12 @@ export const KITCHEN = {
   button: { a: 0.395, y: 0.74, b: 0.2 },
   plate: { r: 0.1, t: 0.012 },
   /**
-   * Clearing the dining table: where the stack of dinner plates is set down (on the left counter,
-   * past the drying mat, clear of what Load dishwasher works with), and where the robot stands for it.
+   * Clearing the dining table: where each hand's plates are set down (at the far end of the left
+   * counter, the right hand's at the back, the left hand's at the front, clear of the cups and the
+   * drying mat that Load dishwasher works with), and where the robot stands for it.
    */
-  stackAt: { a: 0.62, b: -1.17 },
-  stackPose: { a: 0, b: -1.17 },
+  stackAt: { L: { a: 0.52, b: -1.38 }, R: { a: 0.72, b: -1.16 } },
+  stackPose: { a: 0, b: -1.22 },
   cup: { r: 0.04, h: 0.09 },
   /** Drying rack on the left counter: plates stand with their faces along b. */
   plateRack: { a: 0.47, b0: -0.56, b1: -0.32, slots: [-0.37, -0.44, -0.51] },
