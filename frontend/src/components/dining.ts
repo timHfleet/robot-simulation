@@ -12,7 +12,7 @@ import { RoundedBoxGeometry } from 'three/examples/jsm/geometries/RoundedBoxGeom
 import { woodTexture } from './textures'
 
 /** Table centre, its size (x across, z along the long side), and height. */
-export const DINING = { x: 3.7, z: 0, w: 0.95, l: 1.8, h: 0.76 }
+export const DINING = { x: 4.3, z: 1.0, w: 0.95, l: 1.8, h: 0.76 }
 
 /** Chairs: where each one stands and which way it faces (yaw: 0 faces +x). Seats tuck under the table edge. */
 const CHAIR_W = 0.46
@@ -24,7 +24,7 @@ const chairs: { x: number; z: number; yaw: number }[] = (() => {
   const end = l / 2 + CHAIR_D / 2 - 0.1
   return [
     { x: x - side, z: z - 0.45, yaw: 0 },
-    { x: x - side - 0.22, z: z + 0.48, yaw: 0.35 }, // pulled out, turned a little
+    { x: x - side, z: z + 0.48, yaw: 0.15 }, // turned a little, as if someone just got up
     { x: x + side, z: z - 0.45, yaw: Math.PI },
     { x: x + side, z: z + 0.45, yaw: Math.PI },
     { x, z: z - end, yaw: -Math.PI / 2 }, // facing +z, toward the table
@@ -151,7 +151,8 @@ export function buildDining(scene: THREE.Scene) {
   const { x, z, w, l, h } = DINING
 
   // Rug under the table, a little larger than the chairs' reach.
-  const rug = new THREE.Mesh(new THREE.PlaneGeometry(w + 1.5, l + 1.3), mat('#ffffff', { map: rugTexture(), roughness: 1 }))
+  // (The plane is turned a quarter below, so its first side runs along z.)
+  const rug = new THREE.Mesh(new THREE.PlaneGeometry(l + 0.8, w + 0.95), mat('#ffffff', { map: rugTexture(), roughness: 1 }))
   rug.rotation.x = -Math.PI / 2
   rug.rotation.z = Math.PI / 2
   rug.position.set(x, 0.004, z)

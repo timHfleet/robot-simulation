@@ -10,6 +10,7 @@
  */
 import { DINING_FOOTPRINTS } from './dining'
 import { BEDROOM_FOOTPRINTS } from './bedroom'
+import { DOORWAYS, HOUSE_FOOTPRINTS, LIVING_FOOTPRINTS, START } from './house'
 import * as THREE from 'three'
 import { DOCKS, FURNITURE, KITCHEN, LAUNDRY, furnitureRects, stationQuat, toWorld, type StationId } from '../lib/stations'
 import { createFloorCloth, type FloorCloth, type FloorTowel } from './floorCloth'
@@ -309,7 +310,7 @@ export function ballOf(pr: ClutterProp, at: THREE.Vector3) {
 export function buildClutter(scene: THREE.Scene, obstacles: { x: number; z: number; r: number }[]): Clutter {
   const r = rng(42)
   const props: ClutterProp[] = []
-  const rects = [...furnitureRects(), ...DINING_FOOTPRINTS, ...BEDROOM_FOOTPRINTS]
+  const rects = [...furnitureRects(), ...DINING_FOOTPRINTS, ...BEDROOM_FOOTPRINTS, ...HOUSE_FOOTPRINTS, ...LIVING_FOOTPRINTS]
   const T = KITCHEN.trash
 
   const bin = trashCan(r)
@@ -360,26 +361,36 @@ export function buildClutter(scene: THREE.Scene, obstacles: { x: number; z: numb
     const t = at('kitchen', 0.16, -0.72)
     place(towel(r, '#e2e8f0', '#94a3b8'), t.x, t.z, 0.4, false, 'towel')
     // Missed shots around the bin.
-    // In front of the bin and off past the end of the counter, a good 30 cm apart.
-    const misses: [number, number][] = [[0.14, -2.16], [-0.12, -1.86], [0.3, -2.42]]
+    // Well short of the bin, out on the floor and a good 30 cm apart: clear of where the robot
+    // stands to drop things in (and turns), and of the walls, so it has room beside each.
+    const misses: [number, number][] = [[-0.8, -2.15], [-1.1, -1.85], [-0.45, -2.25]]
     for (let i = 0; i < misses.length; i++) {
       const p = at('kitchen', misses[i][0], misses[i][1])
       place(paperBall(r), p.x, p.z, r() * 6, false)
     }
-    const pz = at('kitchen', -0.02, -1.3)
+    const pz = at('kitchen', -0.3, -1.2)
     place(takeawayBox(), pz.x, pz.z, 0.3, false)
   }
-  // Laundry: a towel dropped past the dryer, one in front of the folding table, one halfway across the room.
+  // Towels: two dropped in the laundry room past the dryer, one in the bedroom.
   {
-    place(towel(r, '#a5b4fc', '#e0e7ff'), 2.75, -1.35, 1.1, false, 'towel')
-    place(towel(r, '#fca5a5', '#fee2e2'), -0.25, -0.85, -0.5, false, 'towel')
-    place(towel(r, '#fde68a', '#fffbeb'), 0.75, -0.55, 2.0, false, 'towel')
+    place(towel(r, '#a5b4fc', '#e0e7ff'), 4.25, -1.2, 1.1, false, 'towel')
+    place(towel(r, '#fca5a5', '#fee2e2'), 4.75, -1.85, -0.5, false, 'towel')
+    place(towel(r, '#fde68a', '#fffbeb'), -1.5, 3.75, 2.0, false, 'towel')
   }
 
   // Litter all over the floor, kept out of furniture, obstacles, the docks and the robot's start.
   const docks = Object.values(DOCKS)
   const clear = (x: number, z: number, pad: number) => {
-    if (Math.hypot(x, z) < 0.55) return false
+    if (Math.hypot(x - START.x, z - START.z) < 0.6) return false
+    for (const q of DOORWAYS) if (x > q.x0 && x < q.x1 && z > q.z0 && z < q.z1) return false
+    // Well out from the walls: the arms can't reach down beside a tall wall.
+    for (const q of HOUSE_FOOTPRINTS) if (x > q.x0 - 0.5 && x < q.x1 + 0.5 && z > q.z0 - 0.5 && z < q.z1 + 0.5) return false
+    // Somewhere beside it the base can stand (clear of furniture and walls by its turning
+    // margin), so the robot can reach it.
+    const standable = (cx: number, cz: number) => rects.every((q) => Math.hypot(Math.max(q.x0 - cx, 0, cx - q.x1), Math.max(q.z0 - cz, 0, cz - q.z1)) >= 0.62)
+    let reachable = false
+    for (let k = 0; k < 12 && !reachable; k++) reachable = standable(x + 0.55 * Math.cos((k * Math.PI) / 6), z + 0.55 * Math.sin((k * Math.PI) / 6))
+    if (!reachable) return false
     for (const d of docks) if (Math.hypot(x - d.x, z - d.z) < 0.55) return false
     for (const q of rects) if (x > q.x0 - pad && x < q.x1 + pad && z > q.z0 - pad && z < q.z1 + pad) return false
     for (const o of obstacles) if (Math.hypot(x - o.x, z - o.z) < o.r + pad + 0.05) return false

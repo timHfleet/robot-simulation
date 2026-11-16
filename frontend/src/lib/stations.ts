@@ -17,12 +17,12 @@ export interface Dock {
 }
 
 export const DOCKS: Record<StationId, Dock> = {
-  // The sorting table is a desk against the bedroom wall (+z); the folding table, the washer
-  // and the dryer stand in one row along the laundry side (-z), all facing the room.
-  sort: { x: -0.4, z: 3.2, yaw: -Math.PI / 2 },
-  kitchen: { x: -1.3, z: 0, yaw: Math.PI },
-  laundry: { x: 0, z: -1.7, yaw: Math.PI / 2 },
-  washer: { x: 1.55, z: -1.7, yaw: Math.PI / 2 },
+  // The sorting table is a desk against the bedroom's back wall; the folding table, the washer
+  // and the dryer stand in one row along the laundry room's back wall (see house.ts).
+  sort: { x: -0.4, z: 4.0, yaw: -Math.PI / 2 },
+  kitchen: { x: -1.8, z: 0, yaw: Math.PI },
+  laundry: { x: 0.75, z: -1.7, yaw: Math.PI / 2 },
+  washer: { x: 2.3, z: -1.7, yaw: Math.PI / 2 },
 }
 /** Shoulder height used at each station. */
 export const LIFTS: Record<StationId, number> = { sort: 1.18, kitchen: 1.0, laundry: 1.05, washer: 1.15 }
@@ -182,8 +182,8 @@ export const LAUNDRY = {
   basket: { a0: 0.4, a1: 0.7, b0: -0.6, b1: -0.3, wall: 0.012, h: 0.11 },
   /** Where folded towels are stacked, on the right of the table. */
   stack: { a: 0.52, b: 0.38 },
-  /** Laundry hamper on the floor past the end of the table toward the kitchen (centre, radius, rim height). */
-  hamper: { a: 0.55, b: -1.05, r: 0.23, h: 0.48 },
+  /** Laundry hamper on the floor at the end of the row, past the dryer (centre, radius, rim height). */
+  hamper: { a: 0.55, b: 2.85, r: 0.23, h: 0.48 },
   /** Folds in order: left side, right side, then bottom half up. */
   folds: [
     { point: [0, 0.746, -0.08], n: [0, 0, -1], pinch: [0.55, -0.26] },

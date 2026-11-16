@@ -10,14 +10,15 @@
 import * as THREE from 'three'
 import { RoundedBoxGeometry } from 'three/examples/jsm/geometries/RoundedBoxGeometry.js'
 import type { Footprint } from './dining'
+import { addFadeable } from './house'
 import { knitBump, paintTexture, woodTexture } from './textures'
 
 /** The back wall's front face (z), and its ends and height. */
-export const BEDROOM = { wallZ: 4.2, x0: -2.32, x1: 3.05, wallH: 2.45 }
-const BED = { x0: 0.95, x1: 2.45, z0: 2.2, z1: 4.17, frameH: 0.32, mattressTop: 0.56 }
+export const BEDROOM = { wallZ: 5.0, x0: -2.95, x1: 5.35, wallH: 2.45 }
+const BED = { x0: 2.1, x1: 3.6, z0: 3.0, z1: 4.97, frameH: 0.32, mattressTop: 0.56 }
 const STAND = { w: 0.45, d: 0.4, h: 0.56 }
-const STANDS = [0.4, 2.55] // left edges (x) of the two nightstands
-const DRESSER = { x0: -2.25, x1: -1.35, d: 0.46, h: 0.84 }
+const STANDS = [1.55, 3.7] // left edges (x) of the two nightstands
+const DRESSER = { x0: -2.8, x1: -1.9, d: 0.46, h: 0.84 }
 
 export const BEDROOM_FOOTPRINTS: Footprint[] = [
   { x0: BEDROOM.x0, x1: BEDROOM.x1, z0: BEDROOM.wallZ, z1: BEDROOM.wallZ + 0.06, h: BEDROOM.wallH },
@@ -166,15 +167,16 @@ export function buildBedroom(scene: THREE.Scene) {
 
   // Back wall in a soft sage, with a skirting board.
   const paint = paintTexture([3, 1])
-  const wall = box(W.x0, W.x1, 0, W.wallH, W.wallZ, W.wallZ + 0.06, mat('#ffffff', { color: '#b9c4b3', map: paint, roughness: 0.9 }), 0)
-  wall.castShadow = false
-  root.add(wall)
-  root.add(box(W.x0, W.x1, 0, 0.1, W.wallZ - 0.015, W.wallZ, mat('#f1efe9', { roughness: 0.5 }), 0.003))
+  // The wall and what hangs on it fade together when they're in the camera's way.
+  const wallG = new THREE.Group()
+  wallG.add(box(W.x0, W.x1, 0, W.wallH, W.wallZ, W.wallZ + 0.1, mat('#ffffff', { color: '#b9c4b3', map: paint, roughness: 0.9 }), 0))
+  wallG.add(box(W.x0, W.x1, 0, 0.1, W.wallZ - 0.015, W.wallZ, mat('#f1efe9', { roughness: 0.5 }), 0.003))
+  root.add(wallG)
 
   // Rug under the bed, reaching out beyond its foot.
   const rug = new THREE.Mesh(new THREE.PlaneGeometry(2.4, 2.3), mat('#ffffff', { map: rugTexture(), roughness: 1 }))
   rug.rotation.x = -Math.PI / 2
-  rug.position.set((BED.x0 + BED.x1) / 2, 0.004, 3.05)
+  rug.position.set((BED.x0 + BED.x1) / 2, 0.004, 3.85)
   rug.receiveShadow = true
   root.add(rug)
 
@@ -265,7 +267,7 @@ export function buildBedroom(scene: THREE.Scene) {
     mirror.add(shadowed(frame), glass)
     mirror.rotation.y = Math.PI
     mirror.position.set((D.x0 + D.x1) / 2, D.h + 0.55, W.wallZ - 0.02)
-    root.add(mirror)
+    wallG.add(mirror)
   }
   {
     // Plant: a terracotta pot with a few leaves.
@@ -294,8 +296,9 @@ export function buildBedroom(scene: THREE.Scene) {
     const art = new THREE.Mesh(new THREE.PlaneGeometry(0.88, 0.5), mat('#ffffff', { map: printTexture(), roughness: 0.7 }))
     art.rotation.y = Math.PI
     art.position.set(midX, 1.7, W.wallZ - 0.032)
-    root.add(frame, art)
+    wallG.add(frame, art)
   }
 
   scene.add(root)
+  addFadeable(wallG)
 }

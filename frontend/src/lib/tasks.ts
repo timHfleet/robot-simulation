@@ -1302,12 +1302,32 @@ function planCleanup(ctx: PlanCtx): Act[] {
 }
 
 export function planTask(id: TaskId, ctx: PlanCtx, opts: { towelsLeft: number }): Act[] {
+  // Hands left low (resting on a table after the last task)? Raise the torso and lift the hands
+  // straight up off it first, so the arms swing in to tuck from well above the table.
+  const r = ctx.robot()
+  // Only when parked at a station (out in the open the hands just hang, and there may be no room to back off).
+  const dish = toWorld('kitchen', KITCHEN.dishPose.a, 0, KITCHEN.dishPose.b)
+  const parked = [...Object.values(DOCKS), dish].some((d) => Math.hypot(r.x - d.x, r.z - d.z) < 0.2)
+  const low = parked && Math.min(ctx.tcp('L').y, ctx.tcp('R').y) < 1.0
+  const fwd = new THREE.Vector3(Math.cos(r.yaw), 0, -Math.sin(r.yaw))
+  const right = new THREE.Vector3(Math.sin(r.yaw), 0, Math.cos(r.yaw))
+  const close = (s: number) => new THREE.Vector3(r.x, 1.15, r.z).addScaledVector(fwd, 0.22).addScaledVector(right, s * 0.26)
+  const handsUp: Act[] = low
+    ? [
+        { k: 'lift', h: 1.18 },
+        { k: 'move', arms: { L: T(up(ctx.tcp('L'), 0.3), DOWN), R: T(up(ctx.tcp('R'), 0.3), DOWN) }, slow: true },
+        // Then in close over the base, clear of whatever they were working on, and back off a
+        // little so the arms have room to tuck.
+        { k: 'move', arms: { L: T(close(-1), DOWN), R: T(close(1), DOWN) } },
+        { k: 'nudge', d: -0.25 },
+      ]
+    : []
   // Cleaning up works low and carries things, so its arms never hang (they'd hit the floor);
   // loading the dishwasher happens right beside its open door, where a hanging arm would hit it.
-  if (id === 'cleanup') return planCleanup(ctx)
-  if (id === 'dishes') return planDishes(ctx)
+  if (id === 'cleanup') return [...handsUp, ...planCleanup(ctx)]
+  if (id === 'dishes') return [...handsUp, ...planDishes(ctx)]
   const acts = id === 'sort' ? planSort(ctx) : id === 'fold' ? planFold(ctx, opts.towelsLeft) : planWash(ctx)
-  return hangIdleArms(acts, true)
+  return [...handsUp, ...hangIdleArms(acts, true)]
 }
 
 const isTuck = (g: ArmGoal | undefined) => !!g && (g === TUCK_Q || (!Array.isArray(g) && !!g.keepWaist))

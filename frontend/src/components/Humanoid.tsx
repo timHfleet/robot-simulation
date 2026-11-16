@@ -35,6 +35,7 @@ import { TASKS, planTask, type Act, type Mechanism, type PlanCtx, type TaskId } 
 import { ballOf, buildClutter, type Clutter } from './clutter'
 import { DINING_FOOTPRINTS, buildDining } from './dining'
 import { BEDROOM_FOOTPRINTS, buildBedroom } from './bedroom'
+import { PLAN_WALLS, HOUSE_FOOTPRINTS, LIVING_FOOTPRINTS, START, buildHouse, fadeWalls } from './house'
 import { FloorGrid, planPath, pathLength, type Disc, type Pt } from '../lib/pathPlan'
 import { buildStations, type Mech, type Stations } from './stationProps'
 import type { Physics, PhysicsStats } from './physicsWorld'
@@ -81,16 +82,10 @@ type Obstacle =
   | { kind: 'crate'; x: number; z: number; w: number; d: number; h: number; color: string }
   | { kind: 'barrel'; x: number; z: number; r: number; h: number; color: string }
 
-const OBSTACLES: Obstacle[] = [
-  { kind: 'crate', x: 4.4, z: 3.9, w: 0.7, d: 0.7, h: 0.7, color: '#b45309' },
-  { kind: 'crate', x: -3.4, z: -3.0, w: 0.9, d: 0.5, h: 0.6, color: '#92400e' },
-  { kind: 'crate', x: 3.2, z: -3.4, w: 0.5, d: 0.5, h: 0.45, color: '#a16207' },
-  { kind: 'barrel', x: 3.6, z: -2.3, r: 0.22, h: 0.6, color: '#16a34a' },
-  { kind: 'barrel', x: -3.5, z: 3.1, r: 0.2, h: 0.55, color: '#2563eb' },
-  { kind: 'barrel', x: -3.0, z: 3.4, r: 0.2, h: 0.55, color: '#dc2626' },
-]
+/** Loose crates and barrels (none in the house now; the type stays for the physics and the hoops). */
+const OBSTACLES: Obstacle[] = []
 /** Furniture the base must keep clear of: the stations', plus the dining table and chairs. */
-const FURNITURE_RECTS = [...furnitureRects(), ...DINING_FOOTPRINTS, ...BEDROOM_FOOTPRINTS]
+const FURNITURE_RECTS = [...furnitureRects(), ...DINING_FOOTPRINTS, ...BEDROOM_FOOTPRINTS, ...HOUSE_FOOTPRINTS, ...LIVING_FOOTPRINTS]
 /** How far the base's corners reach from its centre: the clearance it needs to turn on the spot. */
 const TURN_R = 0.47 // 0.44 to the corners, plus slack for the 5 cm grid
 /** The dishwasher door lying open (with the racks out over it): kitchen a -0.30..0.42, |b| < 0.29. */
@@ -107,6 +102,7 @@ const FLOOR_GRID = new FloorGrid(
   BOUNDS,
   [
     ...FURNITURE_RECTS,
+    ...PLAN_WALLS,
     ...OBSTACLES.flatMap((o) => (o.kind === 'crate' ? [{ x0: o.x - o.w / 2, x1: o.x + o.w / 2, z0: o.z - o.d / 2, z1: o.z + o.d / 2 }] : [])),
   ],
   OBSTACLES.flatMap((o) => (o.kind === 'barrel' ? [{ x: o.x, z: o.z, r: o.r }] : [])),
@@ -118,6 +114,7 @@ const FLOOR_GRID_DOOR = new FloorGrid(
   BOUNDS,
   [
     ...FURNITURE_RECTS,
+    ...PLAN_WALLS,
     DOOR_OPEN_RECT,
     ...OBSTACLES.flatMap((o) => (o.kind === 'crate' ? [{ x0: o.x - o.w / 2, x1: o.x + o.w / 2, z0: o.z - o.d / 2, z1: o.z + o.d / 2 }] : [])),
   ],
@@ -699,12 +696,12 @@ function buildWorld(el: HTMLDivElement): World {
 
   const scene = new THREE.Scene()
   scene.background = new THREE.Color('#0b1120')
-  scene.fog = new THREE.Fog('#0b1120', 6, 13)
+  scene.fog = new THREE.Fog('#0b1120', 10, 24)
 
   const camera = new THREE.PerspectiveCamera(40, 1, 0.02, 40)
-  camera.position.copy(CAM_OFFSET)
+  camera.position.set(START.x, 0, START.z).add(CAM_OFFSET)
   const controls = new OrbitControls(camera, renderer.domElement)
-  controls.target.copy(CAM_LOOK)
+  controls.target.set(START.x, 0, START.z).add(CAM_LOOK)
   controls.enableDamping = true
   controls.maxPolarAngle = Math.PI * 0.48
   controls.minDistance = 0.6
@@ -782,10 +779,11 @@ function buildWorld(el: HTMLDivElement): World {
     scene,
     OBSTACLES.map((o) => ({ x: o.x, z: o.z, r: o.kind === 'crate' ? Math.hypot(o.w, o.d) / 2 : o.r })),
   )
+  buildHouse(scene)
   buildDining(scene)
   buildBedroom(scene)
-  // The dining set and the bedroom furniture are solid for loose things too (as their footprints).
-  for (const f of [...DINING_FOOTPRINTS, ...BEDROOM_FOOTPRINTS]) clutter.statics.push({ kind: 'box', x: (f.x0 + f.x1) / 2, z: (f.z0 + f.z1) / 2, w: f.x1 - f.x0, d: f.z1 - f.z0, h: f.h })
+  // The walls, the dining set and the living room and bedroom furniture are solid for loose things too (as their footprints).
+  for (const f of [...HOUSE_FOOTPRINTS, ...DINING_FOOTPRINTS, ...BEDROOM_FOOTPRINTS, ...LIVING_FOOTPRINTS]) clutter.statics.push({ kind: 'box', x: (f.x0 + f.x1) / 2, z: (f.z0 + f.z1) / 2, w: f.x1 - f.x0, d: f.z1 - f.z0, h: f.h })
   // Crates and barrels are solid for the litter too.
   for (const o of OBSTACLES)
     clutter.statics.push(o.kind === 'crate' ? { kind: 'box', x: o.x, z: o.z, w: o.w, d: o.d, h: o.h } : { kind: 'cyl', x: o.x, z: o.z, r: o.r, h: o.h })
@@ -1120,8 +1118,8 @@ export default function Humanoid() {
     let racked: { id: string; container: string; pos: [number, number, number] }[] = []
 
     const sim = {
-      x: 0,
-      z: 0,
+      x: START.x,
+      z: START.z,
       yaw: 0,
       v: 0,
       wz: 0,
@@ -1186,13 +1184,13 @@ export default function Humanoid() {
       /** Per-joint speed scale so all joints of an arm start and finish a move together. */
       vscale: { L: new Array(DOF).fill(1), R: new Array(DOF).fill(1) } as Record<Side, number[]>,
     }
-    const prevPos = new THREE.Vector3()
+    const prevPos = new THREE.Vector3(START.x, 0, START.z)
     resetRef.current = () => {
       if (sim.task) endTask('Stopped')
-      Object.assign(sim, { x: 0, z: 0, yaw: 0, v: 0, wz: 0, odo: 0, goal: null, trail: [], path: [] })
-      w.camera.position.copy(CAM_OFFSET)
-      w.controls.target.copy(CAM_LOOK)
-      prevPos.set(0, 0, 0)
+      Object.assign(sim, { x: START.x, z: START.z, yaw: 0, v: 0, wz: 0, odo: 0, goal: null, trail: [], path: [] })
+      w.camera.position.set(START.x, 0, START.z).add(CAM_OFFSET)
+      w.controls.target.set(START.x, 0, START.z).add(CAM_LOOK)
+      prevPos.set(START.x, 0, START.z)
     }
     stopRef.current = () => {
       sim.goal = null
@@ -2019,8 +2017,11 @@ export default function Humanoid() {
         sim.v = approach(sim.v, vT, ACCEL * h)
         sim.wz = approach(sim.wz, wT, TURN_ACCEL * h)
         const ny = wrap(sim.yaw + sim.wz * h)
-        if (blockedAt(sim.x, sim.z, ny) && !blockedAt(sim.x, sim.z, sim.yaw)) sim.wz = 0
-        else sim.yaw = ny
+        if (blockedAt(sim.x, sim.z, ny) && !blockedAt(sim.x, sim.z, sim.yaw)) {
+          sim.wz = 0
+          // A turn that can't happen counts as blocked too (so a task can't wait on it forever).
+          if (wT !== 0) sim.blockedFor += h
+        } else sim.yaw = ny
         const nx = sim.x + sim.v * Math.cos(sim.yaw) * h
         const nz = sim.z - sim.v * Math.sin(sim.yaw) * h
         if (blockedAt(nx, nz, sim.yaw) && !blockedAt(sim.x, sim.z, sim.yaw)) {
@@ -2246,6 +2247,8 @@ export default function Humanoid() {
       w.sun.position.set(sim.x + 1.5, 4, sim.z + 1.8)
       w.sun.target.position.copy(pos)
       w.controls.update()
+      // Walls in the way of the view fade out (not for the robot's own cameras).
+      fadeWalls(w.camera.position, w.controls.target, st.view !== 'cameras', ffDt ? 0 : dt)
       if (st.view === 'cameras') {
         // The robot's cameras: the head camera across the top, the two wrist cameras below it,
         // and the four base cameras along the bottom.
