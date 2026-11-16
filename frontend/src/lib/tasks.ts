@@ -1366,8 +1366,6 @@ const RIM_IN = 0.125
  * plate tilted this far from straight down, the thumb on top and the fingers under the rim.
  */
 const RIM_TILT = rad(45)
-/** How far the wrist tips a carried plate down from level, like a person carrying it by the rim. */
-const CARRY_TILT = rad(25)
 /** The right arm carrying a plate: elbow down at the side, forearm forward, wrist turned in. */
 const PLATE_CARRY_Q = [22, 13, 2, 123, 146, 135, 10].map(rad)
 /** Torso height carrying plates: the hand rides low by the waist, so the torso goes up to keep the plate above tables and counters. */
@@ -1413,20 +1411,19 @@ function planTable(ctx: PlanCtx): Act[] {
     return { f: new THREE.Vector3(Math.cos(r.yaw), 0, -Math.sin(r.yaw)), rt: new THREE.Vector3(Math.sin(r.yaw), 0, Math.cos(r.yaw)) }
   }
   /**
-   * Carrying a plate (or the stack) in front by its rim, the way a person does: the wrist turns
-   * so the plate hangs tilted down from the hand rather than being held level.
+   * Carrying a plate (or the stack) in front by its rim, the way a person does: the hand angled
+   * in on the rim and the plate held level, so nothing on it slides off.
    */
-  const carryFlat = (side: Side, sign: number, tilt = CARRY_TILT): Target => {
+  const carryFlat = (side: Side, sign: number): Target => {
     const g = rimGrip(new THREE.Vector3(0, 0, side === 'L' ? -1 : 1))
     g.close.multiplyScalar(sign)
-    const turn = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), (side === 'L' ? 1 : -1) * tilt)
     // Close in: driving up to a counter, what's carried stays in front of its edge.
     return {
       frame: 'torso',
       // The hand under its shoulder with the elbow down at the side, the plate across in front.
       pos: new THREE.Vector3(0.28, -0.2, side === 'L' ? -0.24 : 0.24),
-      approach: g.approach.applyQuaternion(turn),
-      close: g.close.applyQuaternion(turn),
+      approach: g.approach,
+      close: g.close,
       exactClose: true,
       keepWaist: true,
       posture: side === 'R' ? PLATE_CARRY_Q : undefined,
@@ -1439,7 +1436,7 @@ function planTable(ctx: PlanCtx): Act[] {
   /** Which way (level) from the held plate's centre to the hand: the plate is set back level with the hand that side of it. */
   const outFrom = (id: string) => ctx.tcp('R').sub(ctx.item(id).pos).setY(0).normalize()
   /** Take a plate lying flat by its rim on the robot's right, at an angle like a person's hand. */
-  const takeRim = (id: string, tilt = CARRY_TILT): Act[] => {
+  const takeRim = (id: string): Act[] => {
     const { f, rt } = frame()
     const c = ctx.item(id).pos
     const P = c.clone().addScaledVector(rt, RIM_IN)
@@ -1464,7 +1461,7 @@ function planTable(ctx: PlanCtx): Act[] {
             { k: 'move', arms: { R: H(up(P, 0.15).addScaledVector(f, -0.06), g.approach, g.close.clone().multiplyScalar(sg)) }, slow: true },
             // Torso up first: the carrying hand rides low, and the plate must clear the table edge.
             { k: 'lift', h: PLATE_LIFT },
-            { k: 'move', arms: { R: carryFlat('R', sg * PLATE_SIGN, tilt) } },
+            { k: 'move', arms: { R: carryFlat('R', sg * PLATE_SIGN) } },
           ]
         },
       },
@@ -1540,8 +1537,7 @@ function planTable(ctx: PlanCtx): Act[] {
     k: 'plan',
     make: (): Act[] => {
       const top = stack[stack.length - 1]
-      // The whole stack is carried level (tipped, the plates would creep on each other).
-      return [{ k: 'say', text: `Taking the stack of ${stack.length} plates to the kitchen` }, { k: 'lift', h: 1.08 }, ...takeRim(top, 0)]
+      return [{ k: 'say', text: `Taking the stack of ${stack.length} plates to the kitchen` }, { k: 'lift', h: 1.08 }, ...takeRim(top)]
     },
   })
   const sp = toWorld('kitchen', KITCHEN.stackPose.a, 0, KITCHEN.stackPose.b)
